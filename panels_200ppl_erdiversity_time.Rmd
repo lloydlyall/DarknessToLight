@@ -1,0 +1,3494 @@
+---
+title: "prelim_village_analysis"
+output: html_document
+---
+
+########
+THESIS CODE: CLEANING, WRANGLING AND ANALYSIS
+########
+
+#loads packages, reads in the luminosity data and prepares it 
+```{r}
+rm(list = ls())
+####GLOBAL CONTrOLS#####
+master_window <- 12
+master_span <- 0.5
+min_months_master <- 1
+min_pop <- 500
+max_dist_to_ptused <- 14
+
+whattodo <- "build_covar_matrix"
+use_seasonal_adjustment <- T
+run_gsynth <-  T
+use_gsynth <- F
+use_eth_dist <- T
+
+stylized_fids <- c(1835,1087,1668, 1696, 979, 811, 690, 294, 293, 272, 295, 465)
+#stylized_fids <- c(566, 680, 692, 534)
+
+library(Metrics)
+library(rsq)
+library(ggplot2)
+library(readr)
+require(gridExtra)
+require(gtable)
+require(grid)
+require(cowplot)
+library(foreign)
+require(lubridate)
+library(ggpubr)
+library(mFilter)
+library(rosm)
+library(prettymapr)
+library(OpenStreetMap)
+library(rgdal)
+library(raster)
+library(spdep)
+library(texreg)
+library(psych)
+library(stargazer)
+```
+
+
+
+##Read in and prepare luminosity panel. Orders them in the correct order for the next chunk regardless of input order
+```{r}
+lum <- read.dbf("D:/panel construction/definition of population areas/construction/200ppl/200ppl_lum.dbf")
+lum <- as.data.frame(lum)
+lum <- t(lum)
+lum <- as.data.frame(lum)
+
+rownames(lum) <- c(substr(rownames(lum), 2, length(rownames(lum))))
+rownames(lum)[1] <- "fid"
+lum_names <- lum[1, ]  #corresponds to fid
+colnames(lum) <- lum_names #this is a unique identifier at the urban area level (ie, the ones I determine, NOT the UN dataset)
+
+lum <- lum[2:nrow(lum), ]
+
+#convert column names from "fid" to "xfid" for graphing
+newnames <- vector(length=length(colnames(lum)))
+for (i in 1:length(colnames(lum))){
+  number <- colnames(lum)[i]
+  newnames[i] <- paste("x",number,sep="")
+}
+colnames(lum) <- newnames
+
+
+#cleaning luminosity data
+lum$source <- ifelse(substr(rownames(lum),5,6) == "sa", "savorydmsp", "viirs")
+lum$date <- ifelse(lum$source == "viirs", substr(rownames(lum), 1, 6), substr(rownames(lum), 1, 4))
+lum$year <- substr(rownames(lum), 1, 4)
+lum$month <- ifelse(lum$source == "viirs", substr(rownames(lum), 5, 6), "NA")
+lum$statistic <- substr(rownames(lum), 7, 9)
+lum$statistic <- ifelse(lum$statistic == "cou", "count", lum$statistic)
+lum$statistic <- ifelse(lum$statistic == "mea", "mean", lum$statistic)
+
+#orders them
+temp <- lum
+lum_viirs <- temp[temp$source == "viirs", ]
+lum_viirs <- lum_viirs[order(lum_viirs$year, lum_viirs$month), ]
+
+lum_dmsp <- temp[temp$source == "savorydmsp", ]
+lum_dmsp <- lum_dmsp[order(lum_dmsp$year, lum_dmsp$month), ]
+
+lum <- rbind(lum_viirs, lum_dmsp)
+```
+
+# luminosity data dates (conversion to format, etc.)
+```{r}
+#means
+temp <- lum
+
+dates <- ifelse(temp$source == "savorydmsp", temp$year, substr(temp$date,1,7))
+viirsdates <- temp[temp$source == "viirs", ]
+viirsdates <- substr(viirsdates$date,1,7)
+viirsdates <- paste(substr(viirsdates, 1, 4),substr(viirsdates,5,6),sep = "")
+viirsdates <- as.character(viirsdates)
+viirsdates <- as.data.frame(viirsdates)
+colnames(viirsdates) <- c("date")
+
+dmspdates <- temp[temp$source == "savorydmsp", ]
+dmspdates <- substr(dmspdates$date,1,4)
+dmspdates <- paste(dmspdates,"01",sep = "") #set it to June 1  so its in the middle
+dmspdates <- as.data.frame(dmspdates)
+colnames(dmspdates) <- c("date")
+
+alldates <- rbind(viirsdates, dmspdates) #assumes VIIrS first, DMSP second, and both are ordered internally 
+alldates <- paste(substr(alldates$date, 1, 4),"-",substr(alldates$date,5,6),"-","01",sep = "")
+alldates <- as.character(alldates)
+alldates <- as.Date(alldates)
+
+lum$date <- alldates
+```
+
+#read in ILAIII ethno-religious data 
+```{r}
+ila3_fids_assigned <- read.dbf("D:/panel construction/definition of population areas/construction/200ppl/ethnicity assignment/200ppl_ILA3_fids_assigned.dbf")
+
+polys_nearest_ila3id <- read.dbf("D:/panel construction/definition of population areas/construction/200ppl/ethnicity assignment/200ppl_polys_nearest_ILAIII_point_id.dbf")
+
+#aggregate ila3 by fid
+
+```
+
+#this function takes a fid and returns ilaIII ethnoreligioyus detail for it
+```{r}
+ila3ethnicity <- function(fid, district){
+  
+  #no data in Al Baa'aj district
+ # if (!is.na(district) & district == "Al Baa'aj"){
+  #   er_majority <- (c("Arab Sunni Muslim", NA, NA)) #group 2 will default to NA if empty
+   #   names(er_majority) <- c("er_majority_1", "er_majority_2", "dist_to_ptused")
+    #  relevant_ila <- ila3_fids_assigned[!is.na(ila3_fids_assigned$fid) & ila3_fids_assigned$fid==1017, ]# a stand-in 100% sunni arab town 1017 (rawa)
+     # er_counts <- iom_er_counts(relevant_ila)
+    #  er_all <- c(er_majority, er_counts)
+    #  return(er_all)
+
+  
+    #define the relevant set of points
+    dist_to_ptused <- NA
+    if (fid %in% ila3_fids_assigned$fid){ 
+      relevant_ila <- ila3_fids_assigned[!is.na(ila3_fids_assigned$fid) & ila3_fids_assigned$fid==fid, ]
+    } else {
+      locationID_nearest <- polys_nearest_ila3id$LocationID[polys_nearest_ila3id$fid == fid]
+      relevant_ila <- ila3_fids_assigned[!is.na(ila3_fids_assigned$LocationID) & ila3_fids_assigned$LocationID==locationID_nearest, ]
+      dist_to_ptused <- polys_nearest_ila3id$HubDist[polys_nearest_ila3id$fid == fid]
+    }
+    
+    #if no point exists (and we have to use the closest one), determine whether to use that or the izady map
+    if (!is.na(dist_to_ptused) & as.numeric(as.character(dist_to_ptused)) >= max_dist_to_ptused){
+   
+      er_majority_1 <- as.character(plnames$eth1[plnames$fid == fid])
+      er_majority_1 <- ifelse(er_majority_1 == "sunniarab", "Arab Sunni Muslim", er_majority_1)
+      er_majority_1 <- ifelse(er_majority_1 == "yezidi", "Kurd Yazidi", er_majority_1)
+      er_majority_1 <- ifelse(er_majority_1 == "sunniturk", "Turkmen Sunni Muslim", er_majority_1)
+      er_majority_1 <- ifelse(er_majority_1 == "sunnikurd", "Kurd Sunni Muslim", er_majority_1 )
+      er_majority_1 <- ifelse(er_majority_1 == "shiaturk", "Turkmen Shia Muslim", er_majority_1 )
+      er_majority_1 <- ifelse(er_majority_1 == "shiaarab", "Arab Shia Muslim", er_majority_1 )
+      
+      er_majority <- (c(er_majority_1, NA, NA))
+       names(er_majority) <- c("er_majority_1", "er_majority_2", "dist_to_ptused")
+     er_counts <- NA
+      er_all <- c(er_majority, er_counts)
+      return(er_all)
+       
+    }
+    
+    
+    ###calculate the er majority group
+  
+    if (nrow(relevant_ila)==1){ #only one point
+      
+        er_majority <- (c(as.character(relevant_ila$Q3.1.ErBe1), as.character(relevant_ila$Q3.1.ErBe2), dist_to_ptused)) #group 2 will default to NA if empty
+        names(er_majority) <- c("er_majority_1", "er_majority_2", "dist_to_ptused")
+        er_counts <- iom_er_counts(relevant_ila)
+        er_all <- c(er_majority, er_counts)
+        return(er_all)
+        
+    } else { #multiple points
+      ethtable <- as.data.frame(table(relevant_ila$Q3.1.ErBe1))
+      ethtable <- ethtable[order(ethtable$Freq, decreasing = T), ]
+      if (as.character(ethtable$Var1[1]) != as.character(ethtable$Var1[2])){
+        er_majority <- (c(as.character(ethtable$Var1[1]), NA, dist_to_ptused)) #one clear leader
+        names(er_majority) <- c("er_majority_1", "er_majority_2", "dist_to_ptused")
+        er_counts <- iom_er_counts(relevant_ila)
+        er_all <- c(er_majority, er_counts)
+        return(er_all)
+        
+      } else if (as.character(ethtable$Var1[2]) != as.character(ethtable$Var1[3])) {
+        er_majority <- (c(as.character(ethtable$Var1[1]), as.character(ethtable$Var1[2]), dist_to_ptused)) #top 2 are tied
+        names(er_majority) <- c("er_majority_1", "er_majority_2", "dist_to_ptused")
+        er_counts <- iom_er_counts(relevant_ila)
+        er_all <- c(er_majority, er_counts)
+        return(er_all)
+        
+      } else {
+        er_majority <- (c("top3tied", "top3tied", dist_to_ptused))
+        names(er_majority) <- c("er_majority_1", "er_majority_2", "dist_to_ptused")
+        er_counts <- iom_er_counts(relevant_ila)
+        er_all <- c(er_majority, er_counts)
+        return(er_all)
+      }
+    }   
+  }
+
+```
+
+#this function sums returnees and HCs by ethnicity and returns the counts 
+```{r}
+iom_er_counts <- function(relevant_ila){
+  sunniarab_count <- sum(relevant_ila$ret_sunarb) + sum(relevant_ila$hc_sunarb)
+  shiaarab_count <- sum(relevant_ila$ret_shiarb) + sum(relevant_ila$hc_shiarb)
+  sunniturk_count <- sum(relevant_ila$ret_suntrk) + sum(relevant_ila$hc_suntrk)
+  shiaturk_count <- sum(relevant_ila$ret_shitrk) + sum(relevant_ila$hc_suntrk)
+  yezidi_count <- sum(relevant_ila$ret_yezidi) + sum(relevant_ila$hc_yezidi)
+  sunnikurd_count <- sum(relevant_ila$ret_sunkrd) + sum(relevant_ila$hc_sunkrd)
+  shiakurd_count <- sum(relevant_ila$ret_shikrd) + sum(relevant_ila$hc_sunkrd)
+  christian_count <- sum(relevant_ila$ret_chrass) + sum(relevant_ila$ret_chrchd) + sum(relevant_ila$ret_chrsyr) + sum(relevant_ila$hc_chrass) + sum(relevant_ila$hc_chrchd) + sum(relevant_ila$hc_chrsyr)
+  shiashabak_count <- sum(relevant_ila$ret_shisbk) + sum(relevant_ila$hc_shisbk)
+  sunnishabak_count <- sum(relevant_ila$ret_sunsbk) + sum(relevant_ila$hc_sunsbk)
+  kakai_count <- sum(relevant_ila$ret_kakai) + sum(relevant_ila$hc_kakai)
+  other_count <- sum(relevant_ila$ret_other) + sum(relevant_ila$hc_other)
+  
+  er_counts <- c(sunniarab_count, shiaarab_count, sunniturk_count, shiaturk_count, yezidi_count, sunnikurd_count, shiakurd_count, christian_count, shiashabak_count, sunnishabak_count, kakai_count, other_count)
+  names(er_counts) <- c("sunniarab_count", "shiaarab_count", "sunniturk_count", "shiaturk_count", "yezidi_count", "sunnikurd_count", "shiakurd_count", "christian_count", "shiashabak_count", "sunnishabak_count", "kakai_count", "other_count")
+  return(er_counts)
+}
+```
+
+#reads in the covariate data (from points) and cleans it 
+```{r}
+# original (before any covars were added) path: D:/panel construction/definition of population areas/construction/500ppl/500ppl_centroids_3_names_geom.dbf")
+
+
+#import covariate data (at the village level) - has names and covariate info 
+plnames <- read.dbf("D:/panel construction/covariates/200ppl run/support/200ppl_covars_iom7.dbf")
+
+plnames <- as.data.frame(plnames)
+                  
+rownames(plnames) <- plnames$fid #colnames are the same because same name order 
+
+#plnames$PNameEn <- as.character(plnames$PNameEn) #to make sure manual_placename is not constructed from factors
+#plnames$manual_nam <- as.character(plnames$manual_nam)
+
+#plnames$manual_placename <- ifelse(is.na(plnames$manual_nam), plnames$PNameEn, plnames$manual_nam)
+
+#clean bridge data
+plnames$bridge_bag <- ifelse(is.na(plnames$bridge_bag), 0 ,plnames$bridge_bag)
+plnames$bridge_erb <- ifelse(is.na(plnames$bridge_erb), 0 ,plnames$bridge_erb)
+
+#clean landmine data
+#plnames$landmines_ <- ifelse(is.na(plnames$landmines_), 250, plnames$landmines_)
+
+#clean hold force data
+plnames$first <- as.character(plnames$first)
+plnames$second <- as.character(plnames$second)
+plnames$third <- as.character(plnames$third)
+plnames$source <- as.character(plnames$source)
+
+plnames$first <- ifelse(is.na(plnames$first), "none" ,plnames$first)
+plnames$second <- ifelse(is.na(plnames$second), "none" ,plnames$second)
+plnames$third <- ifelse(is.na(plnames$third), "none" ,plnames$third)
+plnames$groups <- ifelse(is.na(plnames$groups), "none" ,plnames$groups)
+
+#clean izady ethnicity data
+plnames$christian <- ifelse(plnames$eth1 == "christian" | (!is.na(plnames$eth2) & plnames$eth2 == "christian"), 1, 0)
+plnames$sunniturk <- ifelse(plnames$eth1 == "sunniturk" | (!is.na(plnames$eth2) & plnames$eth2 == "sunniturk"), 1, 0)
+plnames$shiaturk <- ifelse(plnames$eth1 == "shiaturk" | (!is.na(plnames$eth2) &  plnames$eth2 == "shiaturk"), 1, 0)
+
+plnames$corekurdish <- ifelse(plnames$eth1 == "sunnikurd" | (!is.na(plnames$eth2) & plnames$eth2 == "sunnikurd"), 1, 0)
+
+plnames$shabak <- ifelse(plnames$eth1 == "shabak" | (!is.na(plnames$eth2) & plnames$eth2 == "shabak"), 1, 0)
+plnames$yezidi <- ifelse(plnames$eth1 == "yezidi" | (!is.na(plnames$eth2) & plnames$eth2 == "yezidi"), 1, 0)
+plnames$sunniarab <- ifelse(plnames$eth1 == "sunniarab" | (!is.na(plnames$eth2) & plnames$eth2 == "sunniarab"), 1, 0)
+
+plnames$yazdani  <- ifelse(plnames$eth1 == "yazdani" | (!is.na(plnames$eth2) & plnames$eth2 == "yazdani"), 1, 0)
+plnames$mixed_desig <- ifelse(plnames$eth1 == "mixed" | (!is.na(plnames$eth2) & plnames$eth2 == "mixed"), 1, 0)
+plnames$other <- ifelse(plnames$eth1 == "other" | (!is.na(plnames$eth2) & plnames$eth2 == "other"), 1, 0)
+
+plnames$mixed_groups <- ifelse(plnames$ethgrps > 1, 1, 0)
+
+#add x's before the names...
+newnames <- vector(length=length(rownames(plnames)))
+for (i in 1:length(rownames(plnames))){
+  number <- rownames(plnames)[i]
+  newnames[i] <- paste("x",number,sep="")
+}
+rownames(plnames) <- newnames
+
+#plnames$notable <- ifelse(is.na(plnames$manual_nam),0,1)
+```
+
+
+
+
+
+
+#reads in control data (directly from the shapefile). Also contrains tw functions return the start and end dates of isis control when given a FID
+```{r}
+library(purrr)
+
+
+#turn on for voroni-interpolated set 
+controldata <- read.dbf("D:/data/territorial control/updated control covariates/updated_control_covariates_v3.dbf")
+
+controldata <- as.data.frame(controldata)
+
+#convert start and end to dates
+controldata$start_isis <- as.Date(controldata$start_isis)
+controldata$end_isis <- as.Date(controldata$end_isis)
+
+#function reads in the fid (unique village ID of the village in question, and returns a panel of dates and control history for that village)
+
+prep_control_start <- function(fid) {
+ #if the settlement was never captured
+  
+  if (is.na(match(fid, controldata$fid))){
+    return(NULL)
+  } else {
+  
+    targetrowid <- which(controldata$fid == fid)
+    targetrow <- controldata[targetrowid, ]
+    never_capt <- ifelse(!is.na(targetrow$nvr_capt) & targetrow$nvr_capt == 1 | !is.na(targetrow$nvr_capt_e) & targetrow$nvr_capt_e == 1,T,F) # if settlement was never captured
+    
+    if(is.na(targetrow$is_control) | never_capt == T){
+      return(NA)
+    } else {
+    
+      isis_start <- targetrow$start_isis
+      
+      if(!is.na(isis_start)){
+          isis_start<- paste(substr(isis_start,1,8),"01",sep="")
+      }
+      return(isis_start)
+    }
+  }
+}
+
+prep_control_end <- function(fid, isis_start) {
+
+  if (is.na(match(fid, controldata$fid))){
+    return(NULL)
+  } else {
+    targetrowid <- which(controldata$fid == fid)
+    targetrow <- controldata[targetrowid, ]
+    never_capt <- ifelse(!is.na(targetrow$nvr_capt) & targetrow$nvr_capt == 1 | !is.na(targetrow$nvr_capt_e) & targetrow$nvr_capt_e == 1,T,F) # if settlement was never captured 
+    
+    if(is.na(targetrow$is_control)  | never_capt == T){
+      return(NA)
+    } else {
+    
+      isis_end <- targetrow$end_isis
+      
+      if(!is.na(isis_start)){
+        isis_end <- paste(substr(isis_end,1,8),"01",sep="")
+      }
+      
+      return(isis_end)
+    }
+  }
+}
+```
+
+This function returns the control panel when feeded the isis start and end dates
+```{r}
+createcontrolpanel <- function(isis_start, isis_end){
+  dateseries <- read.csv2("D:/panel construction/support/date_panel.csv")
+  dateseries$spacerdates <- as.Date(dateseries$spacerdates, "%m/%d/%Y")
+  dateseries <- as.data.frame(dateseries)
+  dateseries$control <- 0
+  
+  if (!is.null(isis_start) & !is.na(isis_start)){
+    start <- which(dateseries$spacerdates == isis_start)
+    end <- which(dateseries$spacerdates == isis_end)
+    dateseries$control[start:end] <- 1
+  }
+  controlpanel <- dateseries
+  return(controlpanel)
+}
+
+```
+
+
+This function saves the image in the appropriate place
+```{r}
+  graphsaver <- function(filename, full){
+    if (relevant_covars$ls2012sum <= 3000){
+      ggsave(filename, plot = full, path = "D:/panel construction/panels/200p series/2000-3000", width = 10,     height = 12) 
+    }
+    if (relevant_covars$ls2012sum > 3000 & relevant_covars$ls2012sum <= 5000){
+      ggsave(filename, plot = full, path = "D:/panel construction/panels/200p series/3000-5000", width = 10,     height = 12) 
+    }
+    if (relevant_covars$ls2012sum > 5000 & relevant_covars$ls2012sum <= 10000){
+      ggsave(filename, plot = full, path = "D:/panel construction/panels/200p series/5000-10000", width = 10,     height = 12) 
+    }
+    if (relevant_covars$ls2012sum > 10000 ){
+      ggsave(filename, plot = full, path = "D:/panel construction/panels/200p series/10000+", width = 10,     height = 12) 
+    }
+    return("success!")
+  }
+```
+
+
+#this function prepares the acled data, from reading it in from the fid-aggregated file
+
+#This function returns a new row (village) to the covariate panel as a dataframe 
+
+```{r}
+new_covar_row <- function(controlpanel, viirs_series, isis_start, isis_end, village_code, relevant_covars, isiscontrolled, dmsp_series){
+  
+  #identifiers
+  new_row <- village_code
+  new_row <- as.data.frame(new_row)
+  colnames(new_row) <- c("fid")
+  new_row$governorate <- relevant_covars$governorat
+  new_row$district <- relevant_covars$district
+  new_row$subdistrict <- relevant_covars$subdistric
+  new_row$zone <- as.character(relevant_covars$zone)
+#  new_row$isiscontrolled <- isiscontrolled
+  new_row$ycoord <- relevant_covars$ycoord
+  new_row$xcoord <- relevant_covars$xcoord
+
+    #liberation date
+ isis_end <- as.character(isis_end)
+ new_row$date_liberated <- ifelse(is.null(isis_end), NA, isis_end)
+
+ #invasion date
+ isis_start <- as.character(isis_start)
+ new_row$date_invaded <- ifelse(is.null(isis_start), NA, isis_start)
+ 
+  #size and population
+  new_row$pop2012 <- relevant_covars$ls2012sum
+  new_row$pop_density <- relevant_covars$ls2012sum / (relevant_covars$area/1000000)
+  
+  new_row$pop2013 <- relevant_covars$ls2013sum
+  new_row$pop2014 <- relevant_covars$ls2014sum
+  new_row$pop2015 <- relevant_covars$ls2015sum
+  new_row$pop2016 <- relevant_covars$ls2016sum
+  new_row$pop2017 <- relevant_covars$ls2017sum
+  
+  new_row$nearest_hwy_dist <- relevant_covars$hwy_dist
+  new_row$nearest_400kelec_dist <- relevant_covars$elec_dist
+  new_row$nearest_powerplant_dist <- relevant_covars$plant_dist
+  
+  new_row$disputed <- ifelse(!is.na(relevant_covars$disputed),1,0)
+  
+  lumlevel_results <- lumlevels(controlpanel, viirs_series, isis_start, isis_end)
+  
+  #length of occupation, before, and after
+  new_row$months_before <- lumlevel_results[4]
+  new_row$months_during <- lumlevel_results[5]
+  new_row$months_after <- lumlevel_results[6]
+  
+  ###lumlevels###
+  new_row$before <- lumlevel_results[1] #median of before
+  new_row$during <- lumlevel_results[2] #median of during
+  new_row$after <- lumlevel_results[3] #12th month after, smoothed
+
+  new_row$duringfrac <- new_row$during / new_row$before
+  
+  ##IOM##
+  
+  
+  
+  new_row$iom_holder_1 <- ifelse(new_row$date_liberated <= "2017-01-01", as.character(relevant_covars$ctr17_1), as.character(relevant_covars$Q5.3.hold1))
+  new_row$iom_holder_2 <- ifelse(new_row$date_liberated <= "2017-01-01", as.character(relevant_covars$ctr17_2), as.character(relevant_covars$Q5.3.hold2))
+  new_row$iom_holder_hybrid <- paste(new_row$iom_holder_1,new_row$iom_holder_2, sep="_")
+  
+  new_row$pct_very_damaged <- relevant_covars$Q4.7.Res_4 + relevant_covars$Q4.7.Res_3
+  new_row$pct_somewhat_damaged <- relevant_covars$Q4.7.Res_4 + relevant_covars$Q4.7.Res_3 + relevant_covars$Q4.7.Res_2
+  
+  
+  new_row$pmu_present <- ifelse(new_row$iom_holder_1 == "PMUs" | (!is.na(new_row$iom_holder_2) & new_row$iom_holder_2  == "PMUs"), 1, 0)
+  
+  new_row$isf_present <- ifelse(new_row$iom_holder_1 == "Iraqi Army, Police" | (!is.na(new_row$iom_holder_2) & new_row$iom_holder_2 == "Iraqi Army, Police"), 1, 0)
+  
+  new_row$pershmerga_present <- ifelse(new_row$iom_holder_1 == "Asayish, Peshmerga, etc." | (!is.na(new_row$iom_holder_2) & new_row$iom_holder_2 == "Asayish, Peshmerga, etc."), 1, 0)
+  
+  new_row$militas_present <- ifelse((new_row$iom_holder_1 == "Informal Militas"| new_row$iom_holder_1 == "PMUs" | new_row$iom_holder_1 == "Militas") | (!is.na(new_row$iom_holder_2) & (new_row$iom_holder_2 == "Informal Militas"| new_row$iom_holder_2 == "Militas" | new_row$iom_holder_2 == "PMUs")), 1, 0)
+  
+  new_row$tribes_other_present <- ifelse((new_row$iom_holder_1 == "Tribes"| new_row$iom_holder_1 == "Other") | (!is.na(new_row$iom_holder_2) & (new_row$iom_holder_2 == "Tribes"| new_row$iom_holder_2 == "Other")), 1, 0)
+  
+  new_row$isf_pmu_present <- ifelse(new_row$isf_present == 1 | new_row$pmu_present==1,1,0)
+  new_row$tribes_militas_pmu_present <- ifelse(new_row$tribes_other_present == 1 | new_row$pmu_present==1,1,0)
+  
+  new_row$iom_joint_control <- ifelse(!is.na(new_row$iom_holder_2),1,0)
+  
+  new_row$hours_grid_elec <- relevant_covars$Q4.1.1.elc
+  
+  new_row$feel_unwelcome <- ifelse(substr(relevant_covars$Q6.3.Feeli, 1, 3) == "Yes", 1, 0)
+  new_row$feel_uncomfortable <- ifelse(substr(relevant_covars$Q6.4.Feeli, 1, 3) == "Yes", 1, 0)
+  
+  new_row$iom_occupied <- ifelse(substr(relevant_covars$Q1.2.WasLo, 1, 8) == "Yes, occ", 1, 0)
+    
+  new_row$mistrust_ethgroups <- relevant_covars$mistrust_e
+  new_row$mistrust_idp_host <- relevant_covars$mistrust_i
+  new_row$mistrust_any <- relevant_covars$mistrust_e + relevant_covars$mistrust_i
+  
+  new_row$some_ethnic_bias <- relevant_covars$eth_bias
+  
+  new_row$occupied_houses <- relevant_covars$Q4.8.Occup
+  new_row$road_closed <- relevant_covars$Q4.4.RoadF
+
+  
+
+  new_row$total_recovery_required <- new_row$before - new_row$during
+  
+  new_row$total_recovery_completed <- new_row$after - new_row$during
+  new_row$required_recovery_completed <- new_row$total_recovery_completed / new_row$total_recovery_required
+  
+  new_row$post_avg_monthly_growth <- lumlevel_results[13]
+  new_row$post_avg_monthly_growth_capita <- new_row$post_avg_monthly_growth / new_row$pop2017
+  
+  new_row$lumpercap_before <- new_row$before / new_row$pop2012
+  ################
+  
+  #old/other lumluvel stats
+  new_row$pct_recovered <- ifelse(is.na(new_row$before), NA, new_row$after/new_row$before)
+  
+  #growth
+  new_row$lumpercap_growth <- (lumlevel_results[3] / relevant_covars$ls2012sum) - (lumlevel_results[3] / relevant_covars$ls2012sum)
+  
+  #######
+  #IZADY ETHNICITY
+  ######
+  
+  new_row$christian <- relevant_covars$christian
+  new_row$sunniturk <- relevant_covars$sunniturk
+  new_row$shiaturk <- relevant_covars$shiaturk
+  
+  new_row$corekurdish <- relevant_covars$corekurdish
+  new_row$shabak <- relevant_covars$shabak
+  new_row$yezidi <- relevant_covars$yezidi
+  new_row$sunniarab <- relevant_covars$sunniarab
+  new_row$yazdani <- relevant_covars$yazdani
+  new_row$mixed_desig <- relevant_covars$mixed_desig
+  new_row$other <- relevant_covars$other
+  
+  new_row$mixed_groups <- relevant_covars$mixed_groups
+  
+  #binary izady ethnicity
+  new_row$ethnicity <- NA
+  if (!is.na(new_row$mixed_group)){
+    new_row$ethnicity <- ifelse(new_row$christian == 1, "christian", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$sunniturk== 1, "sunniturk", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$shiaturk== 1, "shiaturk", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$corekurdish == 1, "kurd", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$shabak == 1, "shabak", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$yezidi == 1, "yezidi", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$sunniarab == 1,  "sunniarab", new_row$ethnicity)
+    #new_row$ethnicity <- ifelse(new_row$arabbadawi == 1, "badawi", new_row$ethnicity)
+    #new_row$ethnicity <- ifelse(new_row$arabjaziran == 1, "jaziran", new_row$ethnicity)
+    #new_row$ethnicity <- ifelse(new_row$arabnejdi == 1, "nejdi", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$yazdani == 1, "yazdani", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$mixed_desig == 1, "mixed_desig", new_row$ethnicity)
+    new_row$ethnicity <- ifelse(new_row$other == 1, "other", new_row$ethnicity)
+  #} else if (!is.na(new_row$mixed_group)) {
+  #  new_row$ethnicity <- "mixed"
+  }
+  
+  #ethnic diversity by distance
+  #new_row_fid <- new_row$fid
+  #target_ethrow <- which(ethdata$fid == new_row_fid)
+  #new_row$ethnic_distance <- ifelse(length(target_ethrow) == 0, NA, ethdata$diff_eth_mindist[target_ethrow])
+  ##########
+  #IOM ETHNICITY
+  ##########
+  
+  iom_ethnic_results <- ila3ethnicity(village_code, relevant_covars$district)
+  new_row$er_majority_1 <- iom_ethnic_results[1]
+  new_row$er_majority_1 <- ifelse(as.character(new_row$er_majority_1) == "Chaldean Christian", "Christian", new_row$er_majority_1)
+  new_row$er_majority_1 <- ifelse(as.character(new_row$er_majority_1) == "Syriac Christian", "Christian", new_row$er_majority_1)
+  
+  new_row$er_majority_2 <- iom_ethnic_results[2]
+  new_row$iom_distance_if_interp <- iom_ethnic_results[3]
+  new_row$iom_sunniarab <- ifelse(iom_ethnic_results[1] == "Arab Sunni Muslim", 1, 0)
+  
+new_row$iom_turkmen <- ifelse(new_row$er_majority_1 == "Turkmen Shia Muslim" | new_row$er_majority_1 == "Turkmen Sunni Muslim" | new_row$er_majority_1 == "Turkmen Sunni Muslim ",1,0) #put in covar builder
+
+new_row$iom_nonsunni <- ifelse(new_row$iom_sunniarab==1,0,1)
+  
+  #new_row$iom_majority_group <- NA
+ # new_row$iom_majority_group <- ifelse(new_row$iom_majority_group)
+  
+  
+  
+  new_row$majorreligion <- NA
+  new_row$majorreligion <- ifelse(new_row$er_majority_1 == "Arab Sunni Muslim" | new_row$er_majority_1 =="Kurd Sunni Muslim" | new_row$er_majority_1 =="Shabak Sunni Muslim" | new_row$er_majority_1 =="Turkmen Sunni Muslim", "Sunni", new_row$majorreligion)
+  new_row$majorreligion <- ifelse(new_row$er_majority_1 == "Turkmen Shia Muslim" | new_row$er_majority_1 =="Shabak Shia Muslim" , "Shia", new_row$majorreligion)
+   new_row$majorreligion <- ifelse(new_row$er_majority_1 == "Chaldean Christian" | new_row$er_majority_1 =="Kurd Yazidi"  | new_row$er_majority_1 == "Syriac Christian" , "NonMuslim", new_row$majorreligion)
+  
+  
+  new_row$sunniarab_present <- ifelse(as.numeric(as.character(iom_ethnic_results[4])) > 0, 1, 0)
+  new_row$shiaarab_present <- ifelse(as.numeric(as.character(iom_ethnic_results[5])) > 0, 1, 0)
+  new_row$sunniturk_present <- ifelse(as.numeric(as.character(iom_ethnic_results[6])) > 0, 1, 0)
+  new_row$shiaturk_present <- ifelse(as.numeric(as.character(iom_ethnic_results[7])) > 0, 1, 0)
+  new_row$yezidi_present <- ifelse(as.numeric(as.character(iom_ethnic_results[8])) > 0, 1, 0)
+  new_row$sunnikurd_present <- ifelse(as.numeric(as.character(iom_ethnic_results[9])) > 0, 1, 0)
+  new_row$shiakurd_present <- ifelse(as.numeric(as.character(iom_ethnic_results[10])) > 0, 1, 0)
+  new_row$christian_present <- ifelse(as.numeric(as.character(iom_ethnic_results[11])) > 0, 1, 0)
+  new_row$shiashabak_present <- ifelse(as.numeric(as.character(iom_ethnic_results[12])) > 0, 1, 0)
+  new_row$sunnishabak_present <- ifelse(as.numeric(as.character(iom_ethnic_results[13])) > 0, 1, 0)
+  new_row$kakai_present <- ifelse(as.numeric(as.character(iom_ethnic_results[14])) > 0, 1, 0)
+  new_row$other_present <- ifelse(as.numeric(as.character(iom_ethnic_results[15])) > 0, 1, 0)
+  
+  new_row$shia_present <- ifelse(as.numeric(as.character(iom_ethnic_results[12])) > 0 | as.numeric(as.character(iom_ethnic_results[10])) > 0 | as.numeric(as.character(iom_ethnic_results[7])) > 0 | as.numeric(as.character(iom_ethnic_results[5])) > 0, 1, 0)
+  
+  new_row$sunni_present <- ifelse(as.numeric(as.character(iom_ethnic_results[4])) > 0 | as.numeric(as.character(iom_ethnic_results[6])) > 0 | as.numeric(as.character(iom_ethnic_results[9])) > 0 | as.numeric(as.character(iom_ethnic_results[13])) > 0, 1, 0)
+  
+  new_row$nonmuslim_present <-  ifelse(as.numeric(as.character(iom_ethnic_results[8])) > 0 | as.numeric(as.character(iom_ethnic_results[11])) > 0 | as.numeric(as.character(iom_ethnic_results[14])) > 0 | as.numeric(as.character(iom_ethnic_results[15])) > 0, 1, 0)
+  
+  
+
+  new_row$ngroups_present <- sum(new_row$sunniarab_present, new_row$shiaarab_present, new_row$sunniturk_present, new_row$shiaturk_present, new_row$yezidi_present,  new_row$sunnikurd_present, new_row$shiakurd_present, new_row$christian_present,new_row$shiashabak_present, new_row$sunnishabak_present, new_row$kakai_present, new_row$other_present)
+  
+  
+  new_row$majority_sunni <- ifelse(new_row$er_majority_1 == "Arab Sunni Muslim" | new_row$er_majority_1 == "Kurd Sunni Muslim" | new_row$er_majority_1 == "Shabak Sunni Muslim" | new_row$er_majority_1 == "Turkmen Sunni Muslim",1,0)
+ 
+  
+  
+  new_row$nonsunni_iom <- ifelse(new_row$er_majority_1 == "Arab Sunni Muslim", 0, 1)
+  
+  #distances
+ big_cities <- c(relevant_covars$dist_bag, relevant_covars$dist_erb, relevant_covars$dist_kir, relevant_covars$dist_dhk)
+ new_row$closest_bigcity_dist <- min(big_cities)*92.779 #convertsfrom degrees to km (approx)
+ 
+  new_row$kurddist <- relevant_covars$kurddist
+  new_row$kurddist_10k <- ifelse(relevant_covars$kurddist<10, 1, 0)
+
+ #pre-treatment period growth rates
+
+ if (!is.na(dmsp_series)){
+    dmsp_stats <- dmsplevels(dmsp_series)
+    new_row$dmsp_growth <- dmsp_stats[1]
+ } else {
+    new_row$dmsp_growth <- NA
+ }
+
+ new_row$viirs_pre_growth <- lumlevel_results[10]
+ 
+  return(new_row) 
+}
+
+```
+#This function finds the lum level before, extent of destruction, and rebuild within a given period, and the extent of time before invasion, during occupation, and after, the growth path recovered, and the coefficients of the growth path regression line, and returns all of these things 
+```{r}
+lumlevels <- function(controlpanel, viirs_series, isis_start, isis_end) {
+  if (max(controlpanel$controller) == 0){
+    return(NA)
+  }
+  
+  #add the viirs
+  controlpanel$viirs <- viirs_series
+  controlpanel$timetrend <- seq(1, nrow(controlpanel), 1)
+
+  #selects the type of VIIrs series (corrected values stored in 'fitted' variable)
+  controlpanel <- seasonal_adjustment(controlpanel, viirs_series)
+  controlpanel$fitted <- ifelse(controlpanel$fitted < 0, 0, controlpanel$fitted) #if fitted sends a value to <0, (v. rare) make it 0. 
+  
+  #get separate panels for pre-ISIS, during occupation, and after-ISIS periods
+  pre_isis_period <- controlpanel[1:(which(controlpanel$date == isis_start))-1, ]
+  isis_period <- controlpanel[which(controlpanel$date == isis_start):(which(controlpanel$date == isis_end)-1), ]
+  post_isis_period <- controlpanel[(which(controlpanel$date == isis_end)+1):nrow(controlpanel), ] #+1 to get off last controlled month
+  
+  #identify level for a period (pre-conflict, conflict, post conflict) as the max/min average of 3 in the 12 month period 
+  before <- identify_extreme(pre_isis_period, 12, "before") #pre-conflict level
+  during <- identify_extreme(isis_period, master_window, "duringmedian") #extent of destruction
+  duringhigh <- NA #highest light during middle 75% of months of IS governance
+  after <- identify_extreme(post_isis_period, master_window, "after")
+  firstmonth_after <- identify_extreme(post_isis_period, master_window, "first_month_after") #first month after liberation
+  lastmonth_isis <- identify_extreme(isis_period, master_window, "last_month_isis") # last months of isis
+  
+  #calculate the growth paths (by extrapolating)
+  growth_path_predicted <- NA
+  growth_path_recovered <- NA
+  
+  #growth rate in before period
+  viirs_pre_growth <- identify_viirs_growth(pre_isis_period, "pre viirs growth")
+  
+  #load this info directly into relevant_covars
+  growth_intercept <- NA
+  growth_b1 <- NA
+  
+  #occupation data
+  months_before <- nrow(pre_isis_period)
+  months_occupied <- nrow(isis_period)
+  months_after <- nrow(post_isis_period)
+  
+  post_avg_monthly_growth <- identify_viirs_growth(post_isis_period, "post")
+  
+  peace_onset_lumpercap <- NA
+  
+  gsynth_after <- NA
+    
+  return(c(before, during, after, months_before, months_occupied, months_after, growth_path_recovered, growth_intercept, growth_b1, viirs_pre_growth, firstmonth_after, duringhigh, post_avg_monthly_growth, lastmonth_isis, peace_onset_lumpercap, gsynth_after))
+}
+
+```
+
+
+
+#This function identifies extremes
+
+
+```{r}
+identify_extreme <- function(dataset, time_horizon, period_type){
+
+  #identify the median pre-occupation value
+  if (period_type == "before"){ #
+    sortdata <- dataset[order(dataset$date, decreasing = F), ]
+    sortdata <- sortdata[1:6, ]
+    extreme_mean <- median(sortdata$fitted) #Fitflag
+  }
+  
+  if (period_type == "after"){ 
+    #extracts the luminosity value from the final post-invasion month in the window 
+    sortdata <- dataset[order(dataset$date, decreasing = T), ]
+    extreme_mean <- mean(sortdata$fitted[1])
+  }
+  
+    #luminosity in the first month after liberation, use true value 
+  if (period_type == "first_month_after"){ 
+    sortdata <- dataset[order(dataset$date, decreasing = F), ]
+    extreme_mean <- mean(sortdata$viirs[1])
+  }
+  
+  #luminosity in last month of isis control, uses true value
+  if (period_type == "last_month_isis"){ 
+    sortdata <- dataset[order(dataset$date, decreasing = T), ]
+    extreme_mean <- mean(sortdata$viirs[1])
+  }
+
+  
+  if (period_type == "duringmedian"){ #lowest during occupation 
+    sortdata <- dataset[order(dataset$date, decreasing = F), ]
+    extreme_mean <- min(sortdata$fitted)
+  }
+  
+  return(extreme_mean)
+}
+
+```
+
+#this function idenitfies frac_recovered for a given window length
+```{r}
+pct_recovered_window <- function(controlpanel, viirs_series, isis_start, isis_end, light_before, time_horizon){
+  controlpanel$viirs <- viirs_series
+  controlpanel$timetrend <- seq(1, nrow(controlpanel), 1)
+  controlpanel <- seasonal_adjustment(controlpanel, viirs_series)
+  controlpanel$fitted <- ifelse(controlpanel$fitted < 0, 0, controlpanel$fitted)
+  
+  post_isis_period <- controlpanel[(which(controlpanel$date == isis_end)+1):nrow(controlpanel), ]
+  
+  if (nrow(post_isis_period) < time_horizon){ 
+    return(NA)
+  } else if (nrow(post_isis_period) >= time_horizon){
+    post_isis_period <- post_isis_period[1:time_horizon, ] #again only if there are more entries in this period than the time horizon
+
+    #calculate frac recovered
+    sortdata <- post_isis_period[order(post_isis_period$date, decreasing = T), ]
+    light_recovered <- sortdata$fitted[1]
+    frac_recovered <- light_recovered / light_before
+    return(frac_recovered)
+  } 
+}
+```
+
+
+
+This function identifies the average monthly growth rate for a relevant period and returns it 
+```{r}
+identify_viirs_growth <- function(period, calltype){
+  period$monthly_growth <- NA
+  for (i in 2:nrow(period)){
+    period$monthly_growth[i] <- (period$fitted[i] - period$fitted[i-1]) / period$fitted[i-1]
+  }
+  
+  if (calltype == "pre viirs growth"){ #may 2012 to May 2013
+      relevant_period <- period[8:20, ] #14
+      relevant_period <- relevant_period[!is.infinite(relevant_period$monthly_growth) & !is.nan(relevant_period$monthly_growth), ] #to exclude months with a light level of 0 and their directly resulting consequences from consideration
+  }
+  if (calltype == "post") {#liberation + window
+    if (nrow(period) < master_window){
+      return(NA)
+    } else {
+      relevant_period <- period[2:master_window, ] #exclude the first 6 months
+      relevant_period <- relevant_period[!is.infinite(relevant_period$monthly_growth) & !is.nan(relevant_period$monthly_growth), ]
+    }
+  }
+  
+  average_monthly_growth <- median(relevant_period$monthly_growth)
+  return(average_monthly_growth)
+}
+
+```
+
+#deploys the seasonal smoothing
+
+```{r}
+seasonal_adjustment <- function(controlpanel, viirs_series){
+    timeseries<- ts(viirs_series, start=c(2012, 4), end=c(2018, 12), frequency=12)
+
+    #decomposition using loess
+    decompose_timeseries <- stl(timeseries, s.window = "periodic")
+    decompose_timeseries <- as.data.frame(decompose_timeseries$time.series)
+
+    library(ggfortify)
+    dateseries <- read.csv2("D:/panel construction/support/date_panel.csv")
+    dateseries$spacerdates <- as.Date(dateseries$spacerdates, "%m/%d/%Y")
+    dateseries <- as.data.frame(dateseries)
+         
+                
+    tsdata <- as.data.frame(as.numeric(as.character(decompose_timeseries$trend)))
+    tsdata$seasonal <- as.numeric(as.character(decompose_timeseries$seasonal))
+    tsdata$random <- as.numeric(as.character(decompose_timeseries$remainder))
+    tsdata$original <- viirs_series
+    tsdata$corrected <- tsdata$original-tsdata$seasonal
+    tsdata <- as.data.frame(tsdata)
+    tsdata$date <- dateseries$spacerdates
+    colnames(tsdata) <- c("trend", "seasonal", "random", "original", "corrected", "date")
+  
+    new_controlpanel <- controlpanel
+    new_controlpanel$fitted <- tsdata$trend
+    return(new_controlpanel)
+}
+```
+
+
+
+
+This function reads in the the dmsp panel for a village and returns the average annual growth rate 2008 - 2012 for that village
+```{r}
+#function returns averages from the DMSP panel
+dmsplevels <- function(dmsp_series){
+  
+  #pair it with dates, we always assume the dmsp data is in order
+  dmsppanel <- as.data.frame(dmsp_series)
+  years <- as.data.frame(seq(2003,2013,1))
+  dmsppanel <- cbind(dmsppanel, years)
+  colnames(dmsppanel) <- c("dmsp", "year")
+  
+  #if any of the DMSP observations are 0 return a NA
+  if (min(dmsppanel$dmsp) == 0){
+    return(NA)
+  }
+  
+  dmsppanel$annual_growth <- NA
+  for (i in 2:nrow(dmsppanel)){
+    dmsppanel$annual_growth[i] <- (dmsppanel$dmsp[i] - dmsppanel$dmsp[i-1]) / dmsppanel$dmsp[i-1]
+  }
+  
+  abridged_panel <- subset(dmsppanel, dmsppanel$year >=2008 & dmsppanel$year <= 2012)
+  abridged_panel <- as.data.frame(abridged_panel)
+  result <- mean(abridged_panel$annual_growth)
+  
+  if(is.nan(result)){
+    stop()
+  }
+    
+  return(result)
+}
+
+```
+
+
+
+
+```{r}
+build_stylized_plot <- function(viirs_data, village, isis_start, isis_end, relevant_covars, isstylized, type){
+      start_isis <- as.Date(isis_start)
+      end_isis <- as.Date(isis_end)
+      maxy <- as.numeric(viirs_data[ ,village])
+      maxy <- maxy[!is.na(maxy)]
+      maxy <- max(maxy)
+      topbuffer <- maxy*0.15
+      max_y <- maxy + topbuffer
+      name <- ifelse(!is.na(relevant_covars$manualname), as.character(relevant_covars$manualname), as.character(relevant_covars$subdistric))
+      pop <- as.character(relevant_covars$ls2012sum)   
+      fid <- relevant_covars$fid
+      
+      #subset to the plotting grid; add hp filter
+      vd <- viirs_data[ ,village]
+      filter <- hpfilter(vd,freq=1,type=c("lambda"),drift=FALSE)
+      trend <- filter$trend
+      dte <- viirs_data$date
+      active_viirs <- as.data.frame(cbind(vd, trend))
+      active_viirs <- cbind(active_viirs, dte)
+      colnames(active_viirs) <- c("viirs", "viirs_hp", "date")
+  
+      
+      #add loess smoother
+      active_viirs$timetrend <- seq(1, nrow(active_viirs), 1) #timetrend (only used locally within this function)
+      loess <- loess(viirs ~ timetrend, data = active_viirs, span = master_span)
+      active_viirs$viirs_loess <- t <- predict(loess, active_viirs$viirs)
+      colnames(active_viirs) <- c("viirs", "viirs_hp", "date", "timetrend", "viirs_loess")
+      
+      #get correct name
+      plotname <- type
+  
+      if (isstylized == T){
+        plot <- ggplot(viirs_data, aes(x = date, y = viirs_data[ ,village])) + geom_smooth(method="loess", se=TRUE, color = "red",  span = master_span) + geom_point(color="red") + scale_x_date() + ggtitle(name) +  ylab(label = "VIIRS value") + theme_gray() + theme(axis.title.x = element_blank()) + geom_vline(xintercept=start_isis) + geom_vline(xintercept=end_isis) + labs(subtitle = paste("Population: ", pop, sep=" "))
+        
+      } else {
+        
+        if (plotname == "viirs"){
+          plot <- ggplot(active_viirs, aes(x = date, y = viirs)) + geom_point(color="red") + scale_x_date() + ggtitle( "viirs") +  ylab(label =  plotname) + theme_gray() + theme(axis.title.x = element_blank()) + geom_vline(xintercept=start_isis) + geom_vline(xintercept=end_isis)  + theme_grey() + geom_line(data=active_viirs, aes(x=date, y=viirs), color = "red")#geom_smooth(method="loess", se=TRUE, color = "red",  span = master_span) # geom_line(data=active_viirs, aes(x=date, y=viirs_loess), color = "blue")
+        } else {
+          plot <- ggplot(active_viirs, aes(x = date, y = viirs)) + geom_point(color="darkgreen") + scale_x_date() + ggtitle( "viirs") +  ylab(label =  plotname) + theme_gray() + theme(axis.title.x = element_blank()) + geom_vline(xintercept=start_isis) + geom_vline(xintercept=end_isis)  + theme_grey() + geom_line(data=active_viirs, aes(x=date, y=viirs), color = "darkgreen")
+        }                                                                  
+                                                                            
+      }
+      
+    
+      return(plot)
+}
+
+#annotate("rect", xmin = start_isis, xmax = end_isis, ymin =0, ymax = 6, alpha = .2)
+#annotate("rect", xmin = start_isis, xmax = end_isis, ymin = maxy - 1, ymax = maxy, alpha = .2)
+```
+
+```{r}
+build_stylized_dmsp_plot <- function(dmsp_data, village, relevant_covars){
+     
+      name <- ifelse(!is.na(relevant_covars$manualname), as.character(relevant_covars$manualname), as.character(relevant_covars$subdistric))
+      pop <- as.character(relevant_covars$ls2012sum)   
+      fid <- relevant_covars$fid
+  
+      plot <- ggplot(dmsp_data, aes(x = date, y = dmsp_data[ ,village])) + geom_smooth(method=loess, se=TRUE) + geom_point(color="blue")+  scale_x_date() + ggtitle(name) + ylab(label = "DMSP value") + theme_gray() + labs(subtitle = paste("Population: ", pop, sep=" "))
+      
+    
+
+      return(plot)
+}
+
+#annotate("rect", xmin = start_isis, xmax = end_isis, ymin =0, ymax = 6, alpha = .2)
+#annotate("rect", xmin = start_isis, xmax = end_isis, ymin = maxy - 1, ymax = maxy, alpha = .2)
+```
+
+```{r}
+arrange_stylized_plots <- function (stylized_plots, length_stylized, class) {
+
+    all <- do.call("grid.arrange", c(stylized_plots, ncol=3))
+      
+    if (class == "viirs"){
+      ggsave("stylized_viirs_plots.png", plot = all, path = "D:/panel construction/results plots", width = 13, height = 15)  
+    } else {
+       ggsave("stylized_dmsp_plots.png", plot = all, path = "D:/panel construction/results plots", width = 13, height = 15) 
+    }
+}          
+```
+
+
+```{r}
+build_timeseries_plot <- function(viirs_data, village, start_isis, end_isis, relevant_covars){
+     
+  #visual assistance
+      start_isis <- as.Date(start_isis)
+      end_isis <- as.Date(end_isis)
+      maxy <- as.numeric(viirs_data[ ,village])
+      maxy <- maxy[!is.na(maxy)]
+      maxy <- max(maxy)
+      topbuffer <- maxy*0.15
+      max_y <- maxy + topbuffer
+      name <- ifelse(!is.na(relevant_covars$manualname), as.character(relevant_covars$manualname), as.character(relevant_covars$subdistric))
+      pop <- as.character(relevant_covars$ls2012sum)   
+      fid <- relevant_covars$fid
+  
+  
+  #timeseries plotting
+     timeseries<- ts(viirs_series, start=c(2012, 4), end=c(2018, 10), frequency=12)
+    
+     ##classic additive decomposition
+     #decompose_timeseries <- decompose(timeseries, "additive")
+    #adjust_timeseries = timeseries - decompose_timeseries$seasonal
+
+    #decomposition using loess
+    decompose_timeseries <- stl(timeseries, s.window = "periodic")
+    decompose_timeseries <- as.data.frame(decompose_timeseries$time.series)
+
+    library(ggfortify)
+    dateseries <- read.csv2("D:/panel construction/support/date_panel.csv")
+    dateseries$spacerdates <- as.Date(dateseries$spacerdates, "%m/%d/%Y")
+    dateseries <- as.data.frame(dateseries)
+         
+                
+    tsdata <- as.data.frame(as.numeric(as.character(decompose_timeseries$trend)))
+    tsdata$seasonal <- as.numeric(as.character(decompose_timeseries$seasonal))
+    tsdata$random <- as.numeric(as.character(decompose_timeseries$remainder))
+    tsdata$original <- viirs_series
+    tsdata$corrected <- tsdata$original-tsdata$seasonal
+    tsdata <- as.data.frame(tsdata)
+    tsdata$date <- dateseries$spacerdates
+    colnames(tsdata) <- c("trend", "seasonal", "random", "original", "corrected", "date")
+              
+    tsdataplot <- ggplot(tsdata, aes(x=date, y =original)) + geom_line() + geom_point()  + geom_line(data=tsdata, aes(x=date, y=trend), color = "blue") + geom_line(data=tsdata, aes(x=date, y=seasonal), color = "red") + geom_line(data=tsdata, aes(x=date, y=random), color = "green") + geom_line(data=tsdata, aes(x=date, y=corrected), color = "orange") + geom_point(data=tsdata, aes(x=date, y=corrected), color = "orange")   + theme_grey() + ggtitle("Viirs") + geom_vline(xintercept=start_isis) + geom_vline(xintercept=end_isis)
+    
+    return(tsdataplot)
+}
+```
+
+
+#gsynth master
+```{r}
+library(scales)
+library(reshape2)
+library(gsynth)
+
+trigger_gsynth <- function(plnames){
+
+  #get fids to eliminate
+  trash_fids <- create_gsynth_panel(plnames, NA, "trash_fids")
+  #trash_fids <- c("999999999")
+  out_panel <- create_gsynth_panel(plnames, trash_fids, "gs_panel")
+  
+  gs_panel <- out_panel
+  return(gs_panel)
+}
+
+#panelView(fitted ~ controller, data = gs_panel,  index = c("fid","timetrend"), type = "raw") 
+#panelView(fitted ~ controller, data = gs_panel[10000:20000, ],  index = c("fid","timetrend")) 
+                
+```
+
+
+#gsynth creation
+```{r}
+create_gsynth_panel <- function(plnames, trash_fids, returntype){
+#function on 
+  gs_panel <- NA
+  count <- 1
+  ids <- plnames$fid
+  pb <- txtProgressBar(min = 1, max = length(ids), style = 3)
+  for (i in 1:length(ids)){
+    village_code <- ids[i]
+    stat <- "sum"
+  
+    
+  #for extracting the name and covariate info 
+    relevant_covars <- plnames[plnames$fid == village_code, ]
+    
+
+      #prepare control data information 
+          isis_start <- prep_control_start(village_code) #generates the relevant control panel
+
+          isis_end <- prep_control_end(village_code, isis_start)
+
+        #if either missing - meaning ISIS did not occupy
+          
+          if (is.null(isis_start) | is.null(isis_end)){ #| is.na(isis_start) | is.na(isis_end)){
+              isis_start <- NA
+              isis_end <- NA
+              relevant_covars$iscontrol <- NA
+              
+          } else if (is.na(isis_start) | is.na(isis_end)){
+              isis_start <- NA
+              isis_end <- NA
+              relevant_covars$iscontrol <- NA
+            
+          } else if (substr(as.character(isis_start),1,2) == "NA" | substr(as.character(isis_end),1,2) == "NA"){
+              isis_start <- NA
+              isis_end <- NA
+              relevant_covars$iscontrol <- 0
+              
+          } else {
+              relevant_covars$iscontrol <- 1
+          }
+    
+
+
+    if (is.na(relevant_covars$flare_xi) & relevant_covars$ls2012sum >= min_pop & !is.na(relevant_covars$iscontrol) & relevant_covars$iscontrol == 1 & is.na(match(relevant_covars$fid, trash_fids))){ #only proceed if the village is not a flare
+           
+          #for referencing the village in plotting
+          string_village <- paste("x",village_code,sep="")
+          village <- which(colnames(lum)==string_village)
+          
+          #subsect into relevant stat, dmsp and lum sides 
+          plot_data <- lum[lum$statistic == stat, ]
+          viirs_data <- plot_data[plot_data$source == "viirs", ]
+          
+          viirs_series <- viirs_data[ ,village]
+
+      
+          
+          controlpanel <- createcontrolpanel(isis_start, isis_end)
+          colnames(controlpanel) <- c("date", "controller")
+          
+       
+          new_gs_entry_covars <- new_covar_row(controlpanel, viirs_series, isis_start, isis_end, village_code, relevant_covars, relevant_covars$iscontrol, NA)
+ 
+          
+          #create the Gsynth panel data
+          new_gs_entry <- seasonal_adjustment(controlpanel, viirs_series)
+          new_gs_entry$viirs_original <- viirs_series
+          new_gs_entry$gs_timetrend <- seq(1,nrow(new_gs_entry),1)
+          new_gs_entry$controller <- controlpanel$controller
+          
+       
+          #add the Gsynth covariate data
+          for (k in 1:ncol(new_gs_entry_covars)){
+            covar_name <- colnames(new_gs_entry_covars)[k]
+            new_gs_entry$new <- new_gs_entry_covars[ ,k]
+            new_index <- which(colnames(new_gs_entry) == "new")
+            colnames(new_gs_entry)[new_index] <- covar_name
+          }
+          
+          
+ 
+          #trim to window
+    
+          #normalize viirs and fitted viirs using April2012 (row 20)as a base month, (creates NLri, as per Xi et. al. 2018
+          new_gs_entry$viirs_original <- new_gs_entry$viirs_original / new_gs_entry$viirs_original[1]
+          new_gs_entry$fitted <- new_gs_entry$fitted / new_gs_entry$fitted[1]
+          
+          #edit control info to prevent treatment reversals (where treatment applies)
+          new_gs_entry$liberation_period <- 0
+
+           # row_isis_begins <- which(new_gs_entry$controller==1)[1]
+          row_isis_ends <- which(new_gs_entry$controller==1)[length(which(new_gs_entry$controller==1))] + 1
+          new_gs_entry$liberation_period[row_isis_ends:nrow(new_gs_entry)] <- 1
+          
+
+          
+          if(count == 1){
+            gs_panel <- new_gs_entry
+          } else {
+            gs_panel <- rbind(gs_panel, new_gs_entry)
+          }
+          count <- count + 1
+    }
+    setTxtProgressBar(pb, i)
+  }
+  
+
+  if (returntype == "trash_fids"){
+    gs_panel$discard <- ifelse(gs_panel$fitted > 20, 1, NA)
+    gs_panel$discard <- ifelse(gs_panel$fitted < -20, 1, gs_panel$discard)
+    discards <- gs_panel[gs_panel$discard == 1, ]
+    discard_fids <- unique(discards$fid)
+    return(discard_fids)
+  } else {
+      return(gs_panel)
+  } 
+  
+  close(pb)
+}
+
+#gs_trimmed <- subset(gs_panel, drop = gs_panel$fid == discard_fids)
+
+```
+
+
+
+#this is the run function. by changing "whattodo" in global controls 
+```{r echo=T, results='hide'}
+library(ggmap)
+
+#windows <- c(11)
+regression_results <- list()
+
+
+#for (m in 1:3){
+#  master_window <- windows[m]
+  
+#setup for specific types of calls
+#list of stylized plots
+
+
+if (use_gsynth == T){
+  gsynth_counterfactuals <- trigger_gsynth(plnames, F)    
+}
+```
+
+```{r} 
+stylized_plots <- list()
+stylized_dmsp_plots <- list()
+stylized_counter <- 1
+stylized_dmsp_counter <- 1
+
+length_stylized <- length(stylized_fids)
+
+notableflag <- 0
+ids <- (plnames) #can add population threshold here if you want
+ids <- ids$fid
+
+added <- 1 #counter just for ones that are added to the building covar frame
+
+inspection <- c(713, 623, 1690, 690, 247, 716) #use to inspect specific fids
+gsynth_works <- 0
+###############
+#LOOP
+#################
+
+
+  pb <- txtProgressBar(min = 1, max = length(ids), style = 3)
+  
+  for (i in 1:length(ids)){
+    village_code <- ids[i]
+    #village_code <- inspection[i]
+    ##village_code <- stylized_fids[i]
+    
+      stat <- "sum"
+  
+      #for extracting the name and covariate info 
+      relevant_covars <- plnames[plnames$fid == village_code, ]
+      
+      #check if village was occupied. If it was, update relevant covars accordingly and extract the start and end dates
+      library(scales)
+      isis_start <- prep_control_start(village_code) #generates the relevant control panel
+          
+      #take news if it exists, otherwise liveuamap
+      isis_end <- prep_control_end(village_code, isis_start)
+          
+      #if either missing - meaning ISIS did not occupy
+      if (is.null(isis_start) | is.null(isis_end)){ #| is.na(isis_start) | is.na(isis_end)){
+        isis_start <- NA
+        isis_end <- NA
+        relevant_covars$iscontrol <- NA
+              
+      } else if (is.na(isis_start) | is.na(isis_end)){
+          isis_start <- NA
+          isis_end <- NA
+          relevant_covars$iscontrol <- NA
+            
+      } else if (substr(as.character(isis_start),1,2) == "NA" | substr(as.character(isis_end),1,2) == "NA"){
+          isis_start <- NA
+          isis_end <- NA
+          relevant_covars$iscontrol <- 0
+              
+      } else {
+          relevant_covars$iscontrol <- 1
+      }
+      
+      if (is.na(relevant_covars$flare_xi)){ #only proceed if the village is not a flare
+     
+        ###TYPE OF series#####
+  #if (!is.na(relevant_covars$region) & relevant_covars$region == "south"){
+  if (!is.na(relevant_covars$iscontrol)){
+  
+    if (relevant_covars$ls2012sum >= min_pop){
+        
+  
+          #print(relevant_covars$region)
+          #for referencing the village in plotting
+          string_village <- paste("x",village_code,sep="")
+          village <- which(colnames(lum)==string_village)
+          
+          #subsect into relevant stat, dmsp and lum sides 
+          plot_data <- lum[lum$statistic == stat, ]
+          dmsp_data <- plot_data[plot_data$source == "savorydmsp", ]
+          viirs_data <- plot_data[plot_data$source == "viirs", ]
+          
+          viirs_series <- viirs_data[ ,village]
+          dmsp_series <- dmsp_data[ ,village]
+        
+          #prepare control data information 
+        
+          controlpanel <- createcontrolpanel(isis_start, isis_end)
+          colnames(controlpanel) <- c("date", "controller")
+          
+          #generate ISIS control flag
+         # flagcandidate <- subset(controlpanel,controlpanel$controller == 1 | controlpanel$controller == 0)
+          #isiscontrolled <- ifelse(max(flagcandidate$controller == 1),1,0)
+          
+          if (whattodo  == "stylized_panel"){
+  
+            ###VIIrS PANEL####
+            if (!is.na(match(village_code, stylized_fids))){
+              #stylized_counter <- 2
+              if (stylized_counter != length_stylized){
+                stylized_plots[[stylized_counter]] <- build_stylized_plot(viirs_data, village, isis_start, isis_end, relevant_covars, T, NA)
+                stylized_counter <- stylized_counter + 1
+              }
+              
+     
+                #if this is the last stylized plot, arrange and print them 
+                if (stylized_counter == length_stylized){
+                  stylized_plots[[stylized_counter]] <- build_stylized_plot(viirs_data, village, isis_start, isis_end, relevant_covars, T, NA)
+                  arrange_stylized_plots(stylized_plots, length_stylized, "viirs")
+                }
+            }
+            
+            ####DMSP Panel####
+             if (!is.na(match(village_code, stylized_fids))){
+              #stylized_counter <- 2
+                if (stylized_counter != length_stylized){
+                  stylized_dmsp_plots[[stylized_dmsp_counter]] <- build_stylized_dmsp_plot(dmsp_data, village, relevant_covars)
+                  stylized_dmsp_counter <- stylized_dmsp_counter + 1
+                }
+                #if this is the last stylized plot, arrange and print them 
+                if (stylized_dmsp_counter == length_stylized){
+                    stylized_dmsp_plots[[stylized_dmsp_counter]] <- build_stylized_dmsp_plot(dmsp_data, village, relevant_covars)
+                  arrange_stylized_plots(stylized_dmsp_plots, length_stylized, "dmsp")
+                }
+            }
+            
+         
+          }
+          
+          if (whattodo == "build_covar_matrix"){
+            
+            
+              if (added == 1){
+                covar_matrix <- new_covar_row(controlpanel, viirs_series, isis_start, isis_end, village_code, relevant_covars, isiscontrolled, dmsp_series)
+                added <- added + 1
+              }
+              if (added != 1){
+                covar_matrix <- rbind(covar_matrix, new_covar_row(controlpanel, viirs_series, isis_start, isis_end, village_code, relevant_covars, isiscontrolled, dmsp_series))
+                added <- added + 1
+              }
+
+          }
+          
+          
+            
+        if (whattodo == "plot"){
+              if(relevant_covars$ls2012sum>=min_pop){ 
+              
+              
+                
+                dmsp_plot <- ggplot(dmsp_data, aes(x = date, y = dmsp_data[ ,village])) + geom_point(color="blue")+  scale_x_date() + ggtitle("DMSP") + ylab(label = "mean DMSP digital number") + theme_gray() +  geom_smooth(method="loess", se=TRUE) 
+                
+                #plot viirs panel
+              #  viirs_plot <- build_stylized_plot(viirs_data, village, isis_start, isis_end, relevant_covars, F, "viirs")
+                
+                controlpanel$viirs <- viirs_series
+                controlpanel$month <- as.character(substr(controlpanel$date, 6,7))
+                monthly_boxplot <- ggplot(controlpanel, aes(x=month, y=viirs)) + geom_boxplot() + geom_point(color="blue") + theme_grey()
+
+                tsdataplot <- build_timeseries_plot(viirs_data, village, isis_start, isis_end, relevant_covars)
+                
+    
+       timeseries<- ts(viirs_series, start=c(2012, 4), end=c(2018, 10), frequency=12)
+      decompose_timeseries <- decompose(timeseries, "additive")
+      seasonal_plot <- autoplot(decompose_timeseries$seasonal) + theme_grey()
+                
+
+       
+                
+                top <- grid.arrange(tsdataplot, ncol=1, top = paste('Luminosity panel for ', " (", relevant_covars$district, " district, ", relevant_covars$governorat, " governorate)", "FID=", village_code,  sep=""), bottom = paste("  |  ", "Lat:", relevant_covars$ycoord, "  |  Long: ",relevant_covars$xcoord, "  |  pop (2012): ",relevant_covars$ls2012sum, sep = ""))
+                
+                
+                #create table of covars we care about:
+                addl_covar_stats<- new_covar_row(controlpanel, viirs_series, isis_start, isis_end, village_code, relevant_covars, isiscontrolled, dmsp_series)
+                
+                
+                
+                covars <- matrix(nrow = 6, ncol = 2)
+                covars[1,1] <- "before"
+                covars[1,2] <- addl_covar_stats$before
+                covars[2,1] <- "required recovery completed"
+                covars[2,2] <- addl_covar_stats$required_recovery_completed
+                covars[3,1] <- "total recovery required"
+                covars[3,2] <- addl_covar_stats$total_recovery_required
+                covars[4,1] <- "post avg monthly growth"
+                covars[4,2] <- addl_covar_stats$post_avg_monthly_growth
+                covars[5,1] <- "duringfrac"
+                covars[5,2] <- addl_covar_stats$duringfrac
+                covars[6,1] <- "lumlevel during"
+                covars[6,2] <- addl_covar_stats$during
+                  
+                covars <- as.data.frame(covars)
+                colnames(covars) <- c("variable", "value")
+                
+                covars <- tableGrob(covars)
+                
+                #put all plots together 
+               bottom <- grid.arrange(dmsp_plot,covars, nrow = 1, ncol = 2)
+              #if maps were functioning, covars would be "bottom"
+                full <- plot_grid(top, bottom, nrow = 2, ncol = 1, rel_heights = c(1, 1))
+                
+                filename <- paste(relevant_covars$governorat,"_", relevant_covars$district, "_", relevant_covars$fid,"_panel.png",sep="")
+                
+                #save - in a try/catch loop
+                saved <- NULL
+                attempt <- 0
+                while(is.null(saved) && attempt <= 10 ) {
+                  attempt <- attempt + 1
+                  try(
+                    saved <- graphsaver(filename, full)
+                  )
+                 # print(paste("save attempt is",attempt,sep=" "))
+                }
+              }
+            # } 
+           
+        }
+    }
+          setTxtProgressBar(pb, i)
+        }
+      }
+  
+  }
+  covar_matrix <- covar_matrix[order(covar_matrix$pct_recovered, decreasing = T), ]
+  View(covar_matrix)
+  close(pb)
+
+#regression_results[[m]] <- build_regression(covar_matrix)
+
+```
+
+
+
+```{r}
+
+
+update_dv_commontime <- function(covar_matrix_snt, intervals){
+  #covar_matrix_snt <- covar_matrix[covar_matrix$date_liberated >= intervals[1], ]
+
+  #generate blank columns
+  for (m in 1:length(intervals)){
+    newcol <- as.data.frame(vector(length = nrow(covar_matrix_snt)))
+    newcol <- NA
+    covar_matrix_snt <- cbind(covar_matrix_snt, newcol)
+    colnames(covar_matrix_snt)[length(colnames(covar_matrix_snt))] <- as.character(intervals[m])
+  }
+  
+  #fill them
+   pb <- txtProgressBar(min = 0, max = nrow(covar_matrix_snt), style = 3)
+   for (j in 1:nrow(covar_matrix_snt)){
+     
+    #pull the lum panel for that village
+    isis_start <- covar_matrix_snt$date_invaded[j]
+    isis_end <- covar_matrix_snt$date_liberated[j]
+    controlpanel <- createcontrolpanel(isis_start, isis_end)
+    colnames(controlpanel) <- c("date", "controller")
+      
+    village_code <- covar_matrix_snt$fid[j]
+    string_village <- paste("x",village_code,sep="")
+    village <- which(colnames(lum)==string_village)
+    plot_data <- lum[lum$statistic == "sum", ]
+    viirs_data <- plot_data[plot_data$source == "viirs", ]
+    viirs_series <- viirs_data[ ,village]
+    
+    controlpanel$viirs <- viirs_series
+    controlpanel$timetrend <- seq(1, nrow(controlpanel), 1)
+    controlpanel <- seasonal_adjustment(controlpanel, viirs_series)
+      
+    #fill all it's updating columns
+    light_before <- covar_matrix_snt$before[j]
+    for (i in 1:length(intervals)){
+      relevant_col_index <- which(colnames(covar_matrix_snt) == as.character(intervals[i]))
+      light_after_index <- which(as.character(controlpanel$date) == as.character(intervals[i]))
+      
+     
+      if (ncol(viirs_data) == 0 | is.na(covar_matrix_snt$date_liberated[j])){ #missing data
+        covar_matrix_snt[j,relevant_col_index] <- NA
+        
+        #if it was liberated too late for this particular window
+      } else if (covar_matrix_snt$date_liberated[j] >= intervals[i]){
+        covar_matrix_snt[j,relevant_col_index] <- NA
+   
+      } else { #assign a date
+        light_after <- controlpanel$fitted[light_after_index]
+        pct_recovered <- light_after / light_before
+        if (pct_recovered > 1000){
+          stop()
+        }
+        covar_matrix_snt[j,relevant_col_index] <- pct_recovered
+      }
+    
+    }
+    
+  setTxtProgressBar(pb, j)
+  }
+  return(covar_matrix_snt)
+}
+```
+
+############################################################
+A N A L Y S I S
+############################################################
+
+
+Subset, clean and prepare
+```{r}
+prepare_covar_matrix <- function(covar_matrix_snt){
+  clean <- clean_covar_matrix(covar_matrix_snt)
+  witheth <- calc_eth_distance(clean, "other")
+  #witheth$log_ethcount <- log(witheth$diff_eth_count)
+  witheth$pct_recovered_log <- as.numeric(log(witheth$pct_recovered + 1))
+  witheth <- rescale_diversity(witheth)
+  write_csv(witheth, path = "D:/panel construction/covariates/200ppl run/200ppl_covars.csv")
+  return(witheth)
+}
+```
+
+```{r}
+#write_csv(isiscontrolled_covars, "E:/panel construction/covariates/covar_view.csv", append = F)
+#active_covars <- isiscontrolled_covars[isiscontrolled_covars$district != "Hawiga" & isiscontrolled_covars$plname !="Atiq" & isiscontrolled_covars$months_during >= 12, ]
+
+clean_covar_matrix <- function(covar_matrix_snt){
+
+ # isiscontrolled_covars <- covar_matrix[covar_matrix$pct_recovered <= 100, ]
+
+#test <- covar_matrix[covar_matrix$pop2012 >= 1000, ]
+#fid 1140
+  
+  
+  #master window calibration
+  active_covars <- covar_matrix_snt
+  
+
+  #
+  #active_covars <- active_covars[active_covars$pct_recovered < 30, ]
+
+  
+  #exclusions for panel consistency #ALSO INCLUDE NA STArt date
+#  active_covars <- active_covars[!is.na(active_covars$date_liberated)  & !is.na(active_covars$date_invaded), ]
+  
+   #trim to minimum sample size in pop and months
+  active_covars <- active_covars[active_covars$pop2012 >= min_pop, ]
+  
+  
+ # active_covars$dmsp_growth <- ifelse(is.infinite(active_covars$dmsp_growth) | is.nan(active_covars$dmsp_growth), NA, active_covars$dmsp_growth)
+  
+  #exclusions
+
+
+  #villages on fire
+  #active_covars <- active_covars[active_covars$fid != 1059 &  active_covars$fid !=  1363 &  active_covars$fid !=  189 &  active_covars$fid !=  1274 &  active_covars$fid !=  1256 &  active_covars$fid !=  485, ]
+  
+  #airports and factories
+ old_exclusions <- c(760,756,1398,335,279,797,1762,1136)
+  airports <- c(1471,1389)
+  factories <- c(1115,766,249,250,225,1969) #1969 is a border crossing
+  nothing_present <- c(1438,1344,1363,1166,1141)
+ #other <- c(569) #viirs pre growth has a NaN for this settlement
+  
+  active_covars <- active_covars[!active_covars$fid %in% old_exclusions & !active_covars$fid %in% airports &!active_covars$fid %in% factories &!active_covars$fid %in% nothing_present, ]
+  
+
+  
+  #Hadeetha (not occupied) (and one to the super north)
+ # active_covars <- active_covars[active_covars$fid != 1180 &  active_covars$fid !=  1168 &  active_covars$fid !=  1190 &  active_covars$fid !=  164 &  active_covars$fid !=  757 &  active_covars$fid !=  757 &  active_covars$fid != 68 &  active_covars$fid != 1275 &  active_covars$fid != 1200 &  active_covars$fid != 1166, ] #also exclude TelSkuf because intermittent occupation . #1275 = south of mikdadiyah
+  
+#subset to IOM occupied
+  active_covars <- active_covars[active_covars$iom_occupied == 1 | active_covars$district == "Al Baa'aj", ]
+
+
+
+  active_covars <- active_covars[active_covars$before >= 1, ] 
+
+  
+  active_covars <- active_covars[active_covars$fid != 65, ] #remove 1 duplicate
+  active_covars <- active_covars[!is.na(active_covars$fid), ] #removes one blank
+  
+  temp <- active_covars
+
+  
+  temp$mismatch <- ifelse(temp$er_majority_1 == "Arab Sunni Muslim" & temp$ethnicity != "sunniarab", 1, 0)
+  
+  #add a simple time trend
+  dateseries <- read.csv2("D:/panel construction/support/date_panel.csv")
+  dateseries$spacerdates <- as.Date(dateseries$spacerdates, "%m/%d/%Y")
+  dateseries <- as.data.frame(dateseries)
+  dateseries$datetrend <- seq(1, nrow(dateseries))
+    
+  temp$timetrend <- NA
+    
+  for (i in 1:length(temp$date_liberated)){
+    target_date <- temp$date_liberated[i]
+    index <- which(dateseries$spacerdates == target_date)
+    temp$timetrend[i] <- dateseries$datetrend[index]
+  }
+  
+  
+  return(temp)
+}
+```
+
+#calculates the ethnicity of every village meeting pop threshold, IS occupied or not. (creates erdata)
+```{r}
+
+  results <- matrix(nrow = nrow(plnames[plnames$ls2012sum>=min_pop, ]) , ncol = 5)
+  pb <- txtProgressBar(min = 1, max = nrow(plnames[plnames$ls2012sum >= min_pop, ]), style = 3)
+  count <- 1
+  
+  er_before <- plnames[plnames$ls2012sum >= min_pop, ] #only subset is to consider same definition of villages
+  
+  for (k in 1:nrow(er_before)){
+      ethnic_results <- ila3ethnicity(er_before$fid[k], er_before$district[k])
+      results[count, 1] <- er_before$fid[k] 
+      results[count, 2] <- ethnic_results[1]
+      results[count, 3] <- er_before$xcoord[k]
+      results[count, 4] <- er_before$ycoord[k]
+      results[count, 5] <- ethnic_results[3]
+      count <- count + 1
+    
+     setTxtProgressBar(pb, k)
+  }
+  erdata <- results
+  
+  erdata <- as.data.frame(erdata)
+  colnames(erdata) <- c("fid", "er_majority_1", "xcoord", "ycoord", "dist_to_ptused")
+  erdata$xcoord <- as.numeric(as.character(erdata$xcoord))
+  erdata$ycoord <- as.numeric(as.character(erdata$ycoord))
+  
+  erdata$er_majority_1 <- ifelse(as.character(erdata$er_majority_1) == "Chaldean Christian", "Christian", as.character(erdata$er_majority_1))
+  erdata$er_majority_1 <- ifelse(as.character(erdata$er_majority_1) == "Syriac Christian", "Christian", as.character(erdata$er_majority_1))
+  erdata$er_majority_1 <- ifelse(as.character(erdata$er_majority_1) == "Assyrian Christian", "Christian", as.character(erdata$er_majority_1))
+  
+  erdata$er_majority_1 <- as.factor(erdata$er_majority_1)
+
+  write_csv(erdata, path = "D:/panel construction/covariates/200ppl run/erdata.csv")
+```
+
+
+#prepare data on distance to nearest settlement of a different ethno-religious group
+```{r}
+
+calc_eth_distance <- function(clean, type){
+  ethdata <- clean
+  ethdata <- ethdata[!is.na(ethdata$er_majority_1) & ethdata$er_majority_1 != "Unknown" & ethdata$pop2012 >= min_pop, ]
+  ethdata$diff_eth_mindist <- NA
+  ethdata$diff_eth_name <- NA
+  erdata_trim <- erdata[!is.na(erdata$er_majority_1), ]
+  
+  uniqueeths <- unique(ethdata$er_majority_1)
+  if (use_eth_dist == T){
+    for (m in 1:length(uniqueeths)){
+       if (type == "sunni_only"){
+        if(uniqueeths[m] == "Arab Sunni Muslim"){
+            ethdata_allelse <- erdata[erdata$er_majority_1 != "Arab Sunni Muslim", ]
+        } else {
+            ethdata_allelse <- erdata[erdata$er_majority_1 == "Arab Sunni Muslim", ]
+        }
+       } else {
+        ethdata_group <- ethdata[as.character(ethdata$er_majority_1) == as.character(uniqueeths[m]), ] #only pulls from ISIL-occupied set (for speed)(ethdata)
+        ethdata_allelse <- erdata_trim[as.character(erdata_trim$er_majority_1) != as.character(uniqueeths[m]), ]
+        #considers ALL settlements (erdata)
+       } 
+         
+      #ethdata_allelse <- ethdata_allelse[!is.na(ethdata_allelse$fid), ]#removes the blank colimns
+     
+      
+      pb <- txtProgressBar(min = 0, max = nrow(ethdata_group), style = 3)
+      
+      for (i in 1:nrow(ethdata_group)){
+        
+        fid_up <- ethdata_group$fid[i]
+        current_coords <- c(ethdata_group$xcoord[i], ethdata_group$ycoord[i])
+          
+        for (k in 1:nrow(ethdata_allelse)){
+          else_coords <- c(ethdata_allelse$xcoord[k], ethdata_allelse$ycoord[k])
+          dist <- pointDistance(current_coords, else_coords, lonlat=T, allpairs=FALSE)
+          
+          if (k == 1){
+            neighbors <- as.data.frame(dist)
+            neighbors$er_majority_1 <- as.character(ethdata_allelse$er_majority_1[k])
+            neighbors$neighbor_fid <-  as.character(ethdata_allelse$fid[k])
+          } else if (k > 1 & k <= 5){
+            new_row <- as.data.frame(dist)
+            new_row$er_majority_1 <- as.character(ethdata_allelse$er_majority_1[k])
+            new_row$neighbor_fid <-  as.character(ethdata_allelse$fid[k])
+            neighbors <- rbind(neighbors, new_row)
+          } else {
+            if (dist < max(neighbors$dist)){
+              remove_index <- which(neighbors$dist == max(neighbors$dist))
+              neighbors$dist[remove_index] <- dist
+              neighbors$er_majority_1[remove_index] <- as.character(ethdata_allelse$er_majority_1[k])
+              neighbors$neighbor_fid[remove_index] <-  as.character(ethdata_allelse$fid[k])
+            
+            }
+          
+          }
+        }
+          
+        #index to fill in diff_eth_mindist row
+        fill_index <- which(ethdata$fid == fid_up)
+        
+        #calculate dist
+        neighbors$dist <- neighbors$dist / 1000 #convert to ok
+        sum_dists <- (1/(neighbors$dist[1])) + (1/(neighbors$dist[2])) + (1/(neighbors$dist[3])) + (1/(neighbors$dist[4])) + (1/(neighbors$dist[5]))
+        sumsq_dists <- (1/(neighbors$dist[1])^2) + (1/(neighbors$dist[2])^2) + (1/(neighbors$dist[3])^2) + (1/(neighbors$dist[4])^2) + (1/(neighbors$dist[5])^2)
+        
+        
+        
+        ethdata$diff_eth_mindist[fill_index] <- sum_dists
+        ethdata$diff_eth_name[fill_index] <- paste(neighbors$neighbor_fid[1], neighbors$neighbor_fid[2], neighbors$neighbor_fid[3], neighbors$neighbor_fid[4], neighbors$neighbor_fid[5])
+        setTxtProgressBar(pb, i)
+      }
+    }
+  }
+  return(ethdata)
+}
+
+
+```
+
+```{r}
+
+calc_eth_count <- function(clean, type){
+  ethdata <- clean
+  ethdata <- ethdata[!is.na(ethdata$er_majority_1) & ethdata$er_majority_1 != "Unknown" & ethdata$pop2012 >= min_pop, ]
+
+  erdata_trim <- erdata[!is.na(erdata$er_majority_1), ]
+  #temp <- erdata$Latitude
+  #erdata$Latitude <- erdata$Longitude
+  #erdata$Longitude <- temp
+  
+  
+  ethdata$er_majority_1 <- ifelse(ethdata$er_majority_1 == "sunnikurd", "Kurd Sunni Muslim", ethdata$er_majority_1 )
+  ethdata$er_majority_1 <- ifelse(ethdata$er_majority_1 == "shiaturk", "Turkmen Shia Muslim", ethdata$er_majority_1 )
+  
+  ethdata$diff_eth_count <- NA
+  ethdata$eth_fids <- NA
+  
+  
+  uniqueeths <- unique(ethdata$er_majority_1)
+
+  pb <- txtProgressBar(min = 0, max = nrow(ethdata), style = 3)
+  for (i in 1:nrow(ethdata)){
+    fid_up <- ethdata$fid[i]
+    current_coords <- c(ethdata$xcoord[i], ethdata$ycoord[i])
+    current_eth <- ethdata$er_majority_1[ethdata$fid == fid_up]
+    
+    
+    
+    else_data <- erdata_trim[erdata_trim$fid!= fid_up, ]
+    neighbors <- NA
+          
+    for (k in 1:nrow(else_data)){
+      else_coords <- c(else_data$xcoord[k], else_data$ycoord[k])
+      dist <- pointDistance(current_coords, else_coords, lonlat=T, allpairs=FALSE)
+         #k <= 5 because qeue must be full
+          if (k == 1){
+            neighbors <- as.data.frame(dist)
+            neighbors$er_majority_1 <- as.character(else_data$er_majority_1[k])
+            neighbors$neighbor_fid <-  as.character(else_data$fid[k])
+          } else if (k > 1 & k <= 5){
+            new_row <- as.data.frame(dist)
+            new_row$er_majority_1 <- as.character(else_data$er_majority_1[k])
+            new_row$neighbor_fid <-  as.character(else_data$fid[k])
+            neighbors <- rbind(neighbors, new_row)
+          } else {
+            if (dist < max(neighbors$dist)){
+              remove_index <- which(neighbors$dist == max(neighbors$dist))
+              neighbors$dist[remove_index] <- dist
+              neighbors$er_majority_1[remove_index] <- as.character(else_data$er_majority_1[k])
+              neighbors$neighbor_fid[remove_index] <-  as.character(else_data$fid[k])
+            
+            }
+          
+          }
+          #NEED TO MAKE A QEUE THAT BUMPS OUT THE LONGEST ONE, NOT THE LAST ONE (ITS NOT ORDERED), OR ORDER
+        
+      }
+  
+  #count number of diff groups
+
+  diff_count <- 0
+  for (m in 1:nrow(neighbors)){
+    if (neighbors$er_majority_1[m] != current_eth){
+      diff_count <- diff_count + 1
+    }
+  }
+  fill_index <- which(ethdata$fid == fid_up)
+  ethdata$diff_eth_count[fill_index] <- diff_count
+  ethdata$eth_fids[fill_index] <- paste(neighbors$neighbor_fid[1], neighbors$neighbor_fid[2], neighbors$neighbor_fid[3], neighbors$neighbor_fid[4], neighbors$neighbor_fid[5])
+  
+  
+  setTxtProgressBar(pb, i)
+  }   
+  return(ethdata)
+}
+
+```
+
+```{r}
+rescale_diversity <- function(relevant){
+  for (i in 1:nrow(relevant)){
+    min_x <- min(relevant$diff_eth_mindist)
+    max_x <- max(relevant$diff_eth_mindist)
+    relevant$diff_eth_mindist[i] <- (relevant$diff_eth_mindist[i] - min_x) / (max_x - min_x)
+  }
+  return(relevant)
+}
+
+```
+
+#########################################################################################################################################
+
+######################
+REGRESSION
+######################
+
+########
+GENERALIZED SYNTHETIC MATCHING
+########
+```{r}
+
+add_ethdists_to_gs <- function(gs_relevant, summary_relevant){
+  
+  pb <- txtProgressBar(min = 1, max = length(unique(gs_relevant$fid)), style = 3)
+  gs_relevant$diff_eth_mindist <- NA
+  for (i in 1:length(unique(gs_relevant$fid))){
+    target_fid <- unique(gs_relevant$fid)[i]
+    target_summary_row <- summary_relevant[summary_relevant$fid == target_fid, ]
+    ethdist <- target_summary_row$diff_eth_mindist
+    gs_relevant$diff_eth_mindist[gs_relevant$fid == target_fid] <- ethdist
+    setTxtProgressBar(pb, i)
+  }
+  return(gs_relevant)
+}
+```
+
+```{r}
+library(gsynth)
+library(panelView)
+
+gs_panel <- trigger_gsynth(plnames)
+
+
+#add ethdists to the gs panel
+summary_relevant <- prepare_covar_matrix(covar_matrix)
+summary_gs <- clean_covar_matrix(gs_panel)
+gs_ethdists <- add_ethdists_to_gs(summary_gs, summary_relevant)
+
+#add covars
+gs_ethdists$pre_invasion <- ifelse(gs_ethdists$liberation_period == 0 & gs_ethdists$controller == 0, 1, 0)
+gs_ethdists$isis <- ifelse(gs_ethdists$liberation_period == 0 & gs_ethdists$controller == 1, 1, 0)
+
+relevant <- gs_ethdists
+#relevant <- relevant[!is.na(relevant$viirs_pre_growth)  & relevant$duringfrac < 1, ]
+relevant$treated <- ifelse(relevant$liberation_period == 1 & relevant$iom_sunniarab == 0, 1, 0)
+
+relevant$fitted_log <- log(relevant$fitted + 1)  
+panelView(fitted_log ~ treated, data = relevant,  index = c("fid","gs_timetrend"), type = "raw")[1:30]
+
+qplot(summary_relevant$diff_eth_mindist, log(summary_relevant$pct_recovered)) + geom_smooth(method = "lm") + theme_grey()
+```
+
+Estimates the match
+```{r}
+  #uses paralell computing
+  
+  #define groupings - treated when liberation occurrs and and ethnicity is not sunniarab. Treat
+  #relevant$treated <- ifelse(relevant$liberation_period == 1 & relevant$iom_sunniarab == 0, 1, 0)
+  relevant <- gs_ethdists
+  quantiles_relevant <-quantile(summary_relevant$diff_eth_mindist, c(.66,.33))
+
+#  relevant <- relevant[relevant$diff_eth_mindist < quantiles_relevant[3], ]
+
+  relevant$treated <- ifelse(relevant$liberation_period == 1 & relevant$diff_eth_mindist > quantiles_relevant[1] , 1, 0)
+  #relevant$treated <- ifelse(relevant$iom_sunniarab == 0  & relevant$liberation_period == 1 , 1, 0)
+
+  relevant <- relevant[!is.na(relevant$er_majority_1) & relevant$pop2012 > 500, ]
+  
+
+  relevant$fitted_log <- log(relevant$fitted+2)
+  
+  plotter <- relevant
+  #plotter <- relevant[relevant$er_majority_1 == "Shabak Sunni Muslim" | relevant$er_majority_1 == "Shabak Shia Muslim" | relevant$er_majority_1 == "Arab Sunni Muslim", ]
+  
+  out <- gsynth(fitted_log~ treated , data = plotter, 
+                    index = c("fid","gs_timetrend"), force = "unit",
+                    CV = T, r = c(0,5), se = T, 
+                    inference = "parametric", nboots = 1000,
+                    parallel = T)
+
+
+  
+  ATT <-  plot(out) + theme_grey() + ggtitle("Estimated causal effect of high diversity (ATT)") + xlab("Months relative to liberation (0 = liberation)") + ylab("Log relative light level (April 2013 = 0") #+ ylim(-3,1)
+  ggsave("ATT.png", plot = ATT, path = "D:/results plots", width = 9, height = 6)  
+  
+  gs_result <-    plot(out, type = "counterfactual", raw = "none")  + ggtitle("Estimated causal effect of high diversity") + xlab("Months relative to liberation (0 = liberation)") + ylab("Log relative light level (April 2013 = 0)") + theme_grey() + theme(legend.position="bottom")
+    ggsave("gsynth_result.png", plot = gs_result, path = "D:/results plots", width = 9, height = 6)  
+  
+  #isis_fids <- gs_panel[gs_panel$region == "isis", ]
+  #isis_fids <- unique(isis_fids$fid)
+#plot(out, type = "counterfactual", raw = "all")
+plot(out, type = "counterfactual", raw = "band", theme.bw = T)
+factors <- plot(out, type = "factors", xlab="Time") + theme_grey()+ theme(legend.position="bottom")
+
+ggsave("gsynth_factors.png", plot = factors, path = "D:/results plots", width = 9, height = 6)  
+
+loadings <- plot(out, type = "loadings")
+
+stop()
+``` 
+
+```{r}
+pb <- txtProgressBar(min = 1, max = length(id.tr), style = 3)
+id.tr <- out$id.tr
+for (i in 1: length(id.tr)){
+  id <- id.tr[i]
+  if (id %in% stylized_fids){
+    relevant_covars <- summary_relevant[summary_relevant$fid == id, ]
+    plot <- plot(out, type = "counterfactual", id = id) + ggtitle(paste(relevant_covars$er_majority_1,relevant_covars$district))
+    ggsave(paste(i, "gsynth.png"), plot = plot, path = "D:/results plots/gsynth_stylized", width = 9, height = 6)+ theme_grey() + theme(legend.position="bottom")
+  }
+    
+  setTxtProgressBar(pb, i)
+  
+}
+stop()
+
+```
+
+#########
+PROPENSITY SCORE MATCHING
+########
+```{r}
+library(CBPS)
+fit <- CBPS(diff_eth_mindist ~  as.factor(er_majority_1) +timetrend  + duringfrac  + months_during + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density) + log(lumpercap_before) + viirs_pre_growth , data = relevant, method = "exact")
+
+summary(fit)
+
+model <- lm(log(pct_recovered) ~ diff_eth_mindist + as.factor(er_majority_1)  +timetrend  + duringfrac  + months_during + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density) + log(lumpercap_before) + viirs_pre_growth, data = relevant, weights = fit$weights) 
+summary(model)
+
+
+
+```
+
+
+########
+SPATIAL AUTOCOrrELATION
+#########
+
+```{r}
+runsar <- function(fit, dataset, k, type){
+  
+  #define neighbors
+  coords <- subset(dataset, select = c("xcoord", "ycoord"))
+  coords <- as.matrix(coords)
+  fids <- dataset$fid
+  neighbors <- knn2nb(knearneigh(coords, k = k, longlat = T), row.names = fids)
+
+  #plot neighbots
+  #plot.nb(neighbors, coords, col="black", points=T, add=FALSE, arrows=F, length=0.1, xlim=c(min(coords[ ,1]),max(coords[ ,1])), ylim=c(min(coords[ ,2]), max(coords[ ,2])))
+  
+  #calculate distance list
+  dlist <- nbdists(neighbors, coords, longlat = T)
+  
+  #make this inverse distance
+  dlist <- lapply(dlist, function(x) 1/x)
+  
+  #define spatial weights
+  spatial_weights <- nb2listw(neighbors, style="B", zero.policy=NULL, glist=dlist)
+  
+  #estimate SAC models glist=dlist
+  if (type == "sac"){
+    sar <- sacsarlm(fit, data = dataset, listw = spatial_weights)
+  } else if (type == "error"){
+    sar <- errorsarlm(fit, data = dataset, listw = spatial_weights)
+  } else if (type == "lag"){
+    sar <- lagsarlm(fit, data = dataset, listw = spatial_weights)
+  } else if (type == "gstsls"){
+    sar <- gstsls(fit, data = dataset, listw = spatial_weights)
+  }
+  
+  return(sar)
+moran.test(log(dataset$required_recovery_completed+2), spatial_weights)
+}
+
+
+#moran.plot(log(relevant$required_recovery_completed+2), spatial_weights)
+```
+
+
+
+Buildup on simultaneous SAR:
+```{r}
+#setup
+#save <- prepare_covar_matrix(covar_matrix)
+#relevant <- prepare_covar_matrix(covar_matrix)
+
+#relevant <- relevant[relevant$diff_eth_count>=1, ]
+#save <- relevant
+relevant <- save
+#relevant <- relevant[is.na(relevant$er_majority_2), ]
+
+#relevant <- relevant[!is.na(relevant$viirs_pre_growth)  & relevant$duringfrac < 1  &  relevant$pop2012 > 500, ]
+#relevant <- relevant[relevant$district != "Al Qa'em" , ]
+#min_months_master 
+
+
+relevant$eth_short <- relevant$diff_eth_mindist
+#relevant <- relevant[relevant$diff_eth_mindist< .2, ]
+
+#relevant <- relevant[relevant$iom_sunniarab == 1, ]
+#relevant$ngroups_present <- ifelse((!is.na(relevant$ngroups_present)  & relevant$ngroups_present>1) | !is.na(relevant$er_majority_2),1,0)
+
+#relevant$alqaem <- ifelse(!is.na(relevant$district) & relevant$district == "Al Qa'em",1,0 )
+relevant$er_majority_1 <- as.factor(relevant$er_majority_1)
+#relevant$er_majority_1 <- relevel(relevant$er_majority_1, ref = "Christian")
+
+            
+fit_1 <- lm(log(pct_recovered+1) ~ (eth_short) , data = relevant)
+
+fit_2 <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)  + months_during, data = relevant) 
+
+fit_3 <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist), data = relevant)    
+
+fit_4 <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density) , data = relevant)   
+
+fit_5 <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth , data = relevant)  
+
+#binary class on preferred specification, for plot below. 
+#fit_6_mult <- lm(log(pct_recovered) ~ as.factor(relevant$er_majority_1) + iom_turkmen+ nearest_hwy_dist + log(closest_bigcity_dist) + timetrend+ months_during  + log(lumpercap_before) + viirs_pre_growth + log(pop2012) + log(pop_density) + duringfrac + (eth_short) + log(lumpercap_before) + viirs_pre_growth  , data = relevant)
+
+fit_pref <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth + (er_majority_1)  , data = relevant)  
+
+fit_pref_noer <- lm(log(pct_recovered+1) ~   log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth + (er_majority_1)  , data = relevant)  
+
+            
+
+k <- 5      
+sar_1 <- runsar(fit_1, relevant, 5, "sac")
+sar_2 <- runsar(fit_2, relevant, 5, "sac")
+sar_3 <- runsar(fit_3, relevant, 5, "sac")
+sar_4 <- runsar(fit_4, relevant, 5, "sac")
+sar_5 <- runsar(fit_5, relevant, 5, "sac")
+#sar_6_mult <- runsar(fit_6_mult, relevant, 5, "sac")
+sar_6 <- runsar(fit_pref, relevant, 5, "sac")
+
+
+
+models <- list(sar_1, sar_2, sar_3, sar_4, sar_5, sar_6)
+
+coef_names <- c("(intercept)", "ethno-religious diversity", "rho", "lambda", "log(frac. light during ocupation + 1)", "occupation length", "date liberated", "dist. to nearest highway", "log(dist. to nearest city)", "log(2012 population)", "log(2012 population density)", "log(light per capita before occupation)", "growth before occupation", "Christian", "Kurd Sunni Muslim", "Kurd Yazidi", "Shabak Shia Muslim", "Shabak Sunni Muslim", "Turkmen Shia Muslim","Turkmen Sunni Muslim")
+
+htmlreg(models, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1), file  = "D:/results plots/sar_models_build.htm",  single.row = F,groups = list("Spatial dependency controls" = 3:4, "Experience of occupation controls" = 5:6, "Ease-of-access controls" = 7:9, "Pre-invasion population/economic controls" = 10:13, "Ethno-religious group dummies" = 14:20), custom.coef.names = coef_names)
+
+
+screenreg(models, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1), single.row = F, groups = list("Spatial dependency controls" = 3:4, "Experience of occupation controls" = 5:6, "Ease-of-access controls" = 7:9, "Pre-invasion population/economic controls" = 10:13, "Ethno-religious group dummies" = 14:20), custom.coef.names = coef_names)
+
+
+
+
+
+```
+
+
+```{r}
+#95 cint
+#mean +- 1.96*SE
+ses <- as.data.frame(sar_6_mult$coefficients)
+ses <- cbind(ses, sar_6_mult$rest.se)
+colnames(ses) <- c("point", "se")
+
+ses <- subset(ses, substr(rownames(ses), 1, 3) == "er_") 
+
+#extract overall estimate from SAr 5, add it to ses
+ses_o <- as.data.frame(sar_6$coefficients)
+ses_o <- cbind(ses_o, sar_6$rest.se)
+colnames(ses_o) <- c("point", "se")
+ses_o <- subset(ses_o, substr(rownames(ses_o), 1, 3) == "sun") 
+ses_o$point <- -ses_o$point
+ses <- rbind(ses, ses_o)
+
+z <- 1.96
+
+ses$high <- ses$point + z*ses$se #
+ses$low <- ses$point - z*ses$se
+
+ses <- ses[rownames(ses) != "ethnicityshiaturk", ]
+#rownames(ses) <- c("Christian", "Sunni Kurd", "Shia Shabak", "Sunni Turkmen", "Yezidi", "Any minority")
+
+eth <- ses
+
+eth$name <- as.factor(rownames(eth))
+eth$pointest <- exp(eth$point) #- (exp(abs(eth$point)) - 1) #convert to non-logged terms
+
+eth$pointest <- (round(eth$pointest, 3))
+
+#convert confidence intervals
+ses$high <- ses$point + z*ses$se #
+ses$low <- ses$point - z*ses$se
+
+
+eth$name <- factor(eth$name, levels = eth$name[order(eth$point)]) #set order
+
+eth_causal_plot <- ggplot(eth, aes(x=name, y=point, label=pointest)) + geom_point() + geom_errorbar(width=.1, aes(ymin=low, ymax=high)) + theme_grey() + ggtitle("Point estimates: causal effect of ethnicity, relative to Sunni Arab") + geom_hline(yintercept=0, color = "red", size = 1) + geom_text(aes(label=pointest), hjust = 1.2) + xlab("Ethno-religious group") + ylab("Required recovery completed (Fraction)") + labs(caption = "95% confidence intervals")
+
+eth_causal_plot <- eth_causal_plot + annotate(geom = "text", x=1.2, y=0.05, label="Sunni Arab (reference)", color = "red")
+eth_causal_plot
+
+ggsave("ethnicity_causal.png", plot = eth_causal_plot, path = "D:/results plots", width = 9, height = 6)  
+
+#ggplot(relevant, aes(x=relevant$ethnicity, y= log(relevant$required_recovery_completed+2), labels = fid)) + geom_boxplot() + theme_grey() + geom_text(aes(label=fid))
+```
+
+
+SAR for settlements liberated first 
+```{r}
+#setup
+
+intervals <- as.Date(c( "2017-06-01", "2017-09-01", "2018-01-01", "2018-03-01", "2018-06-01", "2018-09-01", "2018-12-01"))
+relevant <- update_dv_commontime(covar_matrix, intervals)
+relevant <- prepare_covar_matrix(relevant)
+#save <- relevant
+#relevant <- relevant[relevant$diff_eth_count>=1, ]
+#relevant <- save
+relevant <- relevant[!is.na(relevant$`2017-06-01`), ]
+
+
+relevant <- relevant[!is.na(relevant$viirs_pre_growth)  & relevant$duringfrac < 1  &  relevant$pop2012 > 500 , ]
+#relevant <- relevant[relevant$district != "Al Qa'em" , ]
+#min_months_master 
+
+relevant$eth_short <- relevant$diff_eth_mindist
+
+
+relevant$alqaem <- ifelse(!is.na(relevant$district) & relevant$district == "Al Qa'em",1,0 )
+
+results <- list()
+datasets <- list()
+
+for (i in 1:length(intervals)){
+  col_index <- which(colnames(relevant) == as.character(intervals[i]))
+  relevant_trim <- relevant[!is.na(relevant[ , col_index]), ]
+  dv <- relevant_trim[ ,col_index]
+  dv <- as.data.frame(dv)
+
+  final <- cbind(relevant_trim, dv)
+
+  fit <- lm(log(dv+1) ~ (eth_short) + timetrend  + duringfrac  + months_during + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density) + log(lumpercap_before) + viirs_pre_growth  + as.factor(er_majority_1), data = final)  
+  
+  results[[i]] <- fit
+  datasets[[i]] <- final
+}
+
+sar_models <- list()
+k <- 5 
+for (m in 1:length(intervals)){
+  lmmodel <- results[[m]]
+  dataset <- datasets[[m]]
+  sar <- runsar(lmmodel, dataset, k ,"sac")
+  sar_models[[m]] <- sar
+}
+
+
+
+htmlreg(sar_models, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1), file  = "D:/results plots/sar_models_consistentgrp_time.htm",  single.row = F, custom.model.names = c("June 2017", "September 2017", "December 2017", "March 2018", "June 2018", "September 2018", "December 2018"))
+screenreg(sar_models, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1), single.row = F) 
+
+
+
+
+#summary.sarlm(sar_5, Nagelkerke = T)
+#plot <- relevant[relevant$district != "Al Qa'em" & relevant$district != "Bayji", ]
+#ggplot(plot, aes(x=eth_short, y = log(pct_recovered), label = as.character(district))) + geom_point() + geom_smooth(method = "lm")
+```
+
+
+
+```{r}
+#95 cint
+#mean +- 1.96*SE
+ses <- matrix(nrow=length(sar_models), ncol = 3)
+dates <- (intervals)
+
+for (i in 1:length(sar_models)){
+  model <- sar_models[[i]]
+  index <- which(labels(model$coefficients) == "eth_short")
+  ses[i,1] <- model$coefficients[index]
+  ses[i,2] <- model$rest.se[index]
+  ses[i,3] <- as.numeric(dates[i])
+}
+
+ses <- as.data.frame(ses)
+colnames(ses) <- c("point", "se", "t")
+
+z <- 1.96
+
+ses$high <- ses$point + z*ses$se #
+ses$low <- ses$point - z*ses$se
+
+eth <- ses
+
+eth$pointest <- eth$point #(exp(eth$point) - 1) #convert to non-logged terms
+
+eth$pointest <- (round(eth$pointest, 3))
+
+#convert confidence intervals
+#eth$low <- exp(eth$low)-1
+#eth$high <- exp(eth$high)-1
+
+
+eth$name <- factor(eth$t, levels = eth$t[order(eth$point, decreasing = T)]) #set order
+
+eth_causal_plot <- ggplot(eth, aes(x=name, y=point, label=pointest)) + geom_point()  + geom_errorbar(width=.1, aes(ymin=low, ymax=high)) + theme_grey() + ggtitle("Causal effect of diversity on recovery as time progresses") + geom_hline(yintercept=0, color = "red", size = 1) + geom_text(aes(label=pointest), hjust = 1.2) + xlab("Months after liberation") + ylab("Change to log fraction of pre-invasion light recovered") + labs(caption = "95% confidence intervals", subtitle = "N changes")
+
+eth_causal_plot <- eth_causal_plot + annotate(geom = "text", x=1.2, y=0.05, label="(reference)", color = "red")
+eth_causal_plot
+
+#ggsave("sunniarab_causal.png", plot = eth_causal_plot, path = "D:/results plots", width = 9, height = 6)  
+
+#ggplot(relevant, aes(x=relevant$ethnicity, y= log(relevant$required_recovery_completed+2), labels = fid)) + geom_boxplot() + theme_grey() + geom_text(aes(label=fid))
+```
+
+
+#########
+LOCAL SHOCKS
+#########
+gs_relevant <- clean_covar_matrix(gs_panel)
+summary_relevant <- prepare_covar_matrix(covar_matrix)
+relevant <- add_ethdists_to_gs(gs_relevant, summary_relevant)
+
+
+relevant <- relevant[!is.na(relevant$viirs_pre_growth)  & relevant$duringfrac < 1, ]
+relevant$treated <- ifelse(relevant$liberation_period == 1 & relevant$sunniarab == 0, 1, 0)
+Prepare the dataset
+```{r}
+#find the correct fids
+calculate_lum_paths <- function(dataset, relative_level, type, quantiles_in, catnames){
+  relevant <- dataset
+  relevant <- relevant[!is.na(relevant$date_invaded),]
+  fids <- relevant$fid
+
+  quantiles <- quantile(relevant$diff_eth_mindist, quantiles_in)
+  
+  pb <- txtProgressBar(min = 1, max = length(fids), style = 3)
+  for (i in 1:length(fids)){
+    village_code <- fids[i]
+    string_village <- paste("x",village_code,sep="")
+    village <- which(colnames(lum)==string_village)
+      
+    plot_data <- lum[lum$statistic == "sum", ]
+    viirs_data <- plot_data[plot_data$source == "viirs", ]
+    viirs_series <- viirs_data[ ,village]
+    
+    #seasonal adjustment
+    isis_start <- relevant$date_invaded[relevant$fid == village_code]
+    isis_end <- relevant$date_liberated[relevant$fid == village_code]
+    controlpanel <- createcontrolpanel(isis_start, isis_end)
+    controlpanel$timetrend <- seq(1, nrow(controlpanel), 1)
+    controlpanel <- seasonal_adjustment(controlpanel, viirs_series)
+    viirs_series_fitted <- controlpanel$fitted
+    
+    #normalize,
+    index <- which(controlpanel$spacerdates == as.Date(relative_level))
+    viirs_series_fitted <- viirs_series_fitted / viirs_series_fitted[index]
+    viirs_series_fitted <- viirs_series_fitted / viirs_series_fitted[index]
+    
+    if (type == "sunniarab"){
+       majority <- as.character(relevant$iom_sunniarab[relevant$fid == village_code])[1] #the 1 captures the gs panel case where there are multiple of the same id
+       grouper <- majority
+    }
+    if (type == "diversity"){
+      erquantile <- NA
+      diff_eth_mindist <- relevant$diff_eth_mindist[relevant$fid == village_code]
+      
+      erquantile <- ifelse(diff_eth_mindist <= quantiles[1], paste("below", quantiles[1]), erquantile)
+      erquantile <- ifelse(diff_eth_mindist >= quantiles[length(quantiles)], paste("above", quantiles[length(quantiles)]), erquantile)
+      
+      if (length(quantiles) > 1){
+        for (k in 2:length(quantiles)){
+          erquantile <- ifelse(diff_eth_mindist >= quantiles[k-1] & diff_eth_mindist <= quantiles[k], paste(">", round(quantiles[k-1],2), "&", "<", round(quantiles[k], 2)), erquantile)
+      
+        }
+      }
+      
+      grouper <- erquantile
+    } 
+    
+    if (i == 1){
+      results <- as.data.frame(viirs_series_fitted)
+      colnames(results) <- grouper
+    } else {
+      results <- cbind(results, viirs_series_fitted)
+      colnames(results)[i] <- grouper
+    }
+    
+
+    setTxtProgressBar(pb, i)
+  }
+  
+  
+  results_t <- t(results)
+  rownames <- rownames(results_t)
+  colnames(results_t) <- as.character(controlpanel$spacerdates)
+  results_t <- as.data.frame(results_t)
+  results_t$grouper <- rownames
+  
+  results_agg <- aggregate(results_t, by = list(as.character(results_t$grouper)), FUN =median)
+  
+  plotter <- t(results_agg)
+  plotter <- as.data.frame(plotter)
+  if (type == "sunniarab"){
+     colnames(plotter) <- c("Not Sunni Arab", "Sunni Arab")
+  }
+  if (type == "diversity"){
+     colnames(plotter) <- results_agg$Group.1
+  }
+  if (!is.na(catnames)){
+    colnames(plotter) <- catnames
+  }
+  
+  plotter <- plotter[2:(nrow(plotter)-1), ]
+  plotter$date <- as.character(rownames(plotter))
+  plotter$date <- as.Date(plotter$date)
+  plotter$period <- "before"
+plotter$period <- ifelse(substr(as.character(plotter$date),1,4) == "2017" | substr(as.character(plotter$date),1,4) == "2018","referendum","before" )
+  return(plotter)
+}
+```
+
+Assemble [does NOT take the GS panel]
+```{r}
+type <- "diversity"
+#relevant <- prepare_covar_matrix(covar_matrix)
+relevant <- save
+relevant <- relevant[!is.na(relevant$viirs_pre_growth)  & relevant$duringfrac < 1, ]
+
+
+dataset1 <- relevant[relevant$disputed== 1 & relevant$kurddist_10k== 0 & relevant$date_liberated <= "2017-06-01", ]
+dataset2 <- relevant[relevant$kurddist_10k == 1  & relevant$date_liberated<= "2017-06-01", ]
+
+if (type == "sunniarab"){
+  disputed_area <- calculate_lum_paths(dataset1, "2017-06-01", "sunniarab", NA, NA)
+  colnames(disputed_area) <- c("not sunni arab - disputed zone", "sunni arab - disputed zone", "date")
+  kurddist_10k_area <- calculate_lum_paths(dataset2, "2017-06-01", "sunniarab", NA, NA)
+  kurddist_10k_area <- kurddist_10k_area[1:2]
+  colnames(kurddist_10k_area) <- c("not sunni arab - <10k of front line", "sunni arab - <10k of front line")
+} else {
+  disputed_area <- calculate_lum_paths(dataset1, "2017-06-01", "diversity", c(.66), NA)
+  colnames(disputed_area) <- c("diverse - disputed zone", "homogenous - disputed zone", "date")
+  kurddist_10k_area <- calculate_lum_paths(dataset2, "2017-06-01", "diversity", c(.66), NA)
+  kurddist_10k_area <- kurddist_10k_area[1:2]
+  colnames(kurddist_10k_area) <- c("diverse - <10k of front line", "homogenous - <10k of front line")
+}
+
+
+plotter <-cbind(disputed_area, kurddist_10k_area)
+
+#plotter <- disputed_area
+```
+
+Plot
+```{r}
+
+plotter$period <- "before"
+plotter$period <- ifelse(substr(as.character(plotter$date),1,4) == "2017" | substr(as.character(plotter$date),1,4) == "2018","referendum","before" )
+temp <- colnames(plotter)
+mvars <- subset(temp, temp != "date" & temp != "period")
+
+
+plotter_melt <- melt(plotter, measure.vars = mvars)
+plotter_melt$value <- as.numeric(as.character(plotter_melt$value))
+
+
+referendum_plot <- ggplot(plotter_melt, aes(x = date, y = value, color = variable)) + scale_x_date() + geom_point() + geom_line() + theme_grey() + xlab("Date") + ylab("Relative light level (June 2017 = 1)") + ggtitle("Light trend in disputed areas surrounding KRI referendum")  + geom_vline(xintercept = as.Date("2017-09-01"),linetype="dashed", size = 1 ) + labs(subtitle = "Including only settlements liberated before July 2017") + theme(legend.position = "bottom") + guides(fill=guide_legend(ncol=2)) + scale_color_manual(values=c("firebrick1", "dodgerblue4", "lightpink", "lightskyblue")) 
+
+#referendum_plot <- referendum_plot + annotate(geom="text", x=as.Date("2017-12-01"), y=4, label="referendum day",  color="black")
+
+referendum_plot <- referendum_plot + facet_grid(. ~ period, scales = "free_x") + theme(strip.background = element_blank(),
+   strip.text.x = element_blank())
+referendum_plot
+#ggsave("referendum_plot.png", plot = referendum_plot, path = "D:/results plots", width = 10, height = 7)  
+```
+
+
+```{r}
+plotter <- plotter[plotter$Date >= as.Date("2017-01-01"), ]
+
+plotter_melt <- melt(plotter, measure.vars = c("Not Sunni Arab - disputed zone", "Sunni Arab - disputed zone", "Not Sunni Arab - <10k of front line", "Sunni Arab - <10k of front line"))
+plotter_melt$value <- as.numeric(as.character(plotter_melt$value))
+
+referendum_plot <- ggplot(plotter_melt, aes(x = Date, y = value, color = variable)) + scale_x_date() + geom_point() + geom_line() + theme_grey() + xlab("Date") + ylab("Relative light level (June 2017 = 1)") + ggtitle("Light trend in disputed areas surrounding KRI referendum")  + geom_vline(xintercept = as.Date("2017-09-01"),linetype="dashed", size = 1 ) + labs(subtitle = "Including only settlements liberated before July 2017") + theme(legend.position = "bottom") + guides(fill=guide_legend(ncol=2)) + scale_color_manual(values=c("firebrick1", "dodgerblue4", "lightpink", "lightskyblue")) 
+
+referendum_plot <- referendum_plot + annotate(geom="text", x=as.Date("2017-07-01"), y=4, label="referendum day",
+              color="black")
+
+ggsave("referendum_plot_window.png", plot = referendum_plot, path = "D:/results plots", width = 10, height = 7)  
+```
+
+```{r}
+build_local_plot <- function(title, data, type, interval, reference, catnames){
+
+  dataset1 <- data[!is.na(data$iom_sunniarab), ]
+  plotter<- calculate_lum_paths(dataset1, reference, type, interval, catnames)
+  if (type == "sunniarab"){
+    plotter_melt <- melt(plotter, measure.vars = c("Not Sunni Arab", "Sunni Arab"))
+  }
+  if (type == "diversity"){
+    temp <- colnames(plotter)
+    mvars <- subset(temp, temp != "date" & temp != "period")
+    plotter_melt <- melt(plotter, measure.vars = mvars)
+  }
+  plotter_melt$value <- as.numeric(as.character(plotter_melt$value))
+  plot <- ggplot(plotter_melt, aes(x = date, y = value, color = variable)) + scale_x_date() + geom_point() + geom_line() + theme_grey() + xlab("Date") + ylab("Relative light level (November 2013 = 1)") + ggtitle(title)  + theme(legend.position = "bottom") 
+  return(plot)
+}
+```
+
+
+```{r}
+relevant <- save
+relevant_sinjar <- relevant[relevant$district == "Sinjar" | relevant$district == "Al Baa'aj", ]
+sinjar <- build_local_plot("Sinjar and Ba'aaj districts", relevant_sinjar, "diversity", c(.66), as.Date("2013-11-01"), c("All other settlements", "Most homogenous 1/3 of settlements"))
+
+relevant_ninewa <- relevant[relevant$district == "Al Hamadaniea" | relevant$district == "Talkaif", ]
+ninewa <- build_local_plot("Ninewa Plain (Al Hamandaniea and Talkaif districts)", relevant_ninewa, "diversity", c(.66), as.Date("2013-11-01"), c("All other settlements", "Most homogenous 1/3 of settlements"))
+
+relevant_mosul <- relevant[relevant$district == "Al Mousel" , ]
+mosul <- build_local_plot("Mosul district", relevant_mosul, "diversity", c(.66), as.Date("2013-11-01"), c("All other settlements", "Most homogenous 1/3 of settlements"))
+
+relevant_talafar <- relevant[relevant$district == "Tala'afar" , ]
+talafar <- build_local_plot("Talafar district", relevant_talafar, "diversity", c(.66), as.Date("2013-11-01"),c("All other settlements", "Most homogenous 1/3 of settlements"))
+
+results <- list(sinjar, ninewa, mosul, talafar)
+localplots <- do.call("grid.arrange", c(results, ncol=2))
+ggsave("localplots.png", plot = localplots, path = "D:/results plots", width = 12, height =9) 
+
+
+
+#relevant_sunni <- relevant[relevant$disputed==0, ]
+#sunni_all <- build_local_plot("All", relevant_sunni, "diversity", c(.66), as.Date("2013-11-01"), NA)
+
+####
+
+#all <- build_local_plot("All", relevant, "diversity", c(.33, .66), as.Date("2013-11-01"), NA)
+
+#relevant_disputed <- relevant[relevant$disputed==1, ]# & relevant$district != "Al Haweeja" , ]
+#t <- build_local_plot("Light trend in disputed region during KRI referendum", relevant_disputed, "diversity", c(.66), as.Date("2013-11-01"), c("relatively diverse", "relatively homogenous"))
+
+#referendum_plot <- t + facet_grid(. ~ period, scales = "free_x") + theme(strip.background = element_blank(),
+ #  strip.text.x = element_blank())  + geom_vline(xintercept = as.Date("2017-09-01"),linetype="dashed", size = 1 ) + labs(subtitle = "Including only settlements liberated before July 2017")
+
+#referendum_plot
+ggsave("referendum_plot.png", plot = referendum_plot, path = "D:/results plots", width = 10, height = 7)  
+
+```
+
+Eth diversity
+```{r}
+#preped <- prepare_covar_matrix(covar_matrix)
+relevant <- save
+
+relevant <- relevant[!is.na(relevant$viirs_pre_growth)  & relevant$duringfrac < 1, ]
+relevant <- relevant[!is.na(relevant$er_majority_1) & relevant$er_majority_1 != "Turkmen Sunni Muslim" & relevant$er_majority_1 != "Turkmen Shia Muslim", ]
+
+lowdists <-  c(0, 1)
+highdists <- c(0,10)
+
+results <- list()
+plotter <- NA
+for (i in 1:length(lowdists)){
+  dist_low <- lowdists[i]
+  dist_high <- highdists[i]
+  
+  close_data <- relevant[(relevant$diff_eth_count >= dist_low & relevant$diff_eth_count <= dist_high & relevant$iom_sunniarab == 1) | relevant$iom_sunniarab == 0, ]
+  
+  if (i == 1){
+    plotter <- calculate_lum_paths(close_data, "2013-11-01")
+  } else {
+    append <- calculate_lum_paths(close_data, "2013-11-01")
+    append <- subset(append, select = c("Sunni Arab"))
+    colnames(append) <- c(paste("Sunni Arab", i))
+    plotter <- cbind(plotter, append)
+  }
+  
+  #close <- build_local_plot(NA, NA, NA, paste("closetest", dist_low, "-", dist_high), F, close_data)
+  #results[[i]] <- close
+}
+
+
+  meltnames <- colnames(plotter)
+  meltnames <- meltnames[meltnames != "date"]
+  plotter_melt <- melt(plotter, measure.vars = meltnames)
+  plotter_melt$value <- as.numeric(as.character(plotter_melt$value))
+  plot <- ggplot(plotter_melt, aes(x = date, y = value, color = variable)) + scale_x_date() + geom_point() + geom_line() + theme_grey()
+  
+ # + xlab("Date") + ylab("Relative light level (November 2013 = 1)") + ggtitle(title)
+  
+  #+ theme(legend.position = "bottom") + guides(fill=guide_legend(ncol=2)) 
+```
+
+#######
+ROBUSTNESS CHECKS
+#######
+
+Moran's I test
+```{r}
+stop()
+  coords <- subset(relevant, select = c("Longitude", "Latitude"))
+  coords <- as.matrix(coords)
+  fids <- relevant$fid
+  neighbors <- knn2nb(knearneigh(coords, k = 10), row.names = fids)
+  dlist <- nbdists(neighbors, coords, longlat = T)
+  dlist <- lapply(dlist, function(x) 1/x)
+  spatial_weights <- nb2listw(neighbors, style="B", zero.policy=NULL)
+  moran.test(log(relevant$required_recovery_completed+2), spatial_weights)
+
+
+  
+    qplot(residuals.sarlm(sar_5, spatial_weights))
+```
+
+#manual added variable plots for SARLM 
+```{r}
+relevant <- save
+
+relevant$eth_short <- relevant$diff_eth_mindist
+relevant$duringfrac <- log(relevant$duringfrac+1)
+
+relevant$Arab_Sunni_Muslim <- ifelse(relevant$er_majority_1 == "Arab Sunni Muslim",1,0)
+relevant$Kurd_Sunni_Muslim  <- ifelse(relevant$er_majority_1 == "Kurd Sunni Muslim",1,0)
+relevant$Turkmen_Sunni_Muslim  <- ifelse(relevant$er_majority_1 == "Turkmen Sunni Muslim",1,0)
+relevant$Turkmen_Shia_Muslim  <- ifelse(relevant$er_majority_1 == "Turkmen Shia Muslim",1,0)
+relevant$Shabak_Shia_Muslim  <- ifelse(relevant$er_majority_1 == "Shabak Shia Muslim",1,0)
+relevant$Shabak_Sunni_Muslim  <- ifelse(relevant$er_majority_1 == "Shabak Sunni Muslim",1,0)
+relevant$Christian  <- ifelse(relevant$er_majority_1 == "Christian",1,0)
+relevant$Kurd_Yazidi  <- ifelse(relevant$er_majority_1 == "Kurd Yazidi",1,0)
+
+base <- fit_pref
+ #replace the factor with dummies
+base <- update(base, ~ . - (er_majority_1) - viirs_pre_growth  + Kurd_Sunni_Muslim + Turkmen_Sunni_Muslim + Turkmen_Shia_Muslim + Shabak_Shia_Muslim + Shabak_Sunni_Muslim + Christian + Kurd_Yazidi )
+  
+
+coefnames <- names(base$coefficients)
+coefnames <- coefnames[ substr(coefnames,1,3) != "(In"] #substr(coefnames,1,3)!= "eth"
+
+results <- list()
+
+pb <- txtProgressBar(min = 1, max = length(coefnames), style = 3)
+       
+for (i in 1:length(coefnames)){
+  iv <- coefnames[i]
+    #stage1
+  others_against_response <- update(base, paste("~ . -",iv))
+  oar<- runsar(others_against_response, relevant, 10, "sac")
+  
+  #stage 2
+  interest_against_others <- update(base, paste(iv, "~ . -", iv))
+  iao<- runsar(interest_against_others, relevant, 10, "sac")
+  
+  #plot
+ # plot <- qplot(oar$residuals, iao$residuals) + geom_smooth(method="lm") + theme_grey() + xlab(paste(iv, "| everything else")) + ylab("log(required recovery completed + 2)") +  ggtitle(iv)
+  
+  plotter <- as.data.frame(cbind(oar$residuals, iao$residuals)) 
+  colnames(plotter) <- c("oar", "iao")
+
+  plot <- ggplot(plotter, aes(y=oar, x = iao)) + geom_smooth(method="lm") + theme_grey() + xlab(paste(iv, "| everything else")) + ylab("log(frac. pre-invasion light recovered + 1)") +  ggtitle(iv) + geom_point()
+  results[[i]] <- plot
+
+  
+  setTxtProgressBar(pb, i)
+}
+
+avplots <- do.call("grid.arrange", c(results, ncol=3))
+avplots_lab <- annotate_figure(avplots, top = text_grob("Added variable plots (preferred specification with SSAR)", face = "bold", size = 18))
+ggsave("avplots_sar.png", plot = avplots_lab, path = "D:/results plots", width = 15, height = 20)  
+
+diversity <- results[[1]]
+
+ggsave("avplot_diversity.png", plot = results[[1]], path = "D:/results plots", width = 10, height = 7)  
+
+
+```
+
+
+SAR at different diversity brackets
+```{r}
+relevant <- save
+relevant$eth_short <- relevant$diff_eth_mindist
+relevant$er_majority_1 <- as.factor(relevant$er_majority_1)
+k <- 5
+lowbounds <- quantile(relevant$diff_eth_mindist)[1:4]
+highbounds <- quantile(relevant$diff_eth_mindist)[2:5]
+
+
+results <- list()
+labels <- list()
+
+for (i in 1:4){
+  relevant_trim <- relevant[relevant$diff_eth_mindist >= lowbounds[i] & relevant$diff_eth_mindist < highbounds[i], ]
+    
+  
+    if (length(unique(relevant_trim$er_majority_1)) == 1){ #if only sunni arabs
+      lmmodel <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth  , data = relevant_trim)  
+    
+    } else { #more than one group
+      
+      lmmodel <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth + (er_majority_1)  , data = relevant_trim)  
+    }
+
+  sar <- runsar(lmmodel, relevant_trim, k ,"sac")
+  results[[i]] <- sar
+  
+  label <- paste(round(lowbounds[i],2)," - ", round(highbounds[i],2))
+  labels[[i]] <- label
+}
+
+
+#coef_names <- c("(intercept)", "ER diversity", "log(frac. light during ocupation + 1)", "occupation length", "date liberated", "dist. to nearest highway", "log(dist. to nearest city", "log(2012 population)", "log(2012 population density)", "log(light per capita before occupation)", "growth before occupation", "rho", "lambda", "Kurd Sunni Muslim", "Kurd Yazidi", "Turkmen Sunni Muslim", "Turkmen Shia Muslim", "Christian", "Shabak Shia Muslim", "Shabak Sunni Muslim")
+  
+ screenreg(results, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1), single.row = F, custom.model.names = c(labels[[1]], labels[[2]], labels[[3]], labels[[4]]))
+           
+htmlreg(results, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1), single.row = F, custom.model.names = c(labels[[1]], labels[[2]], labels[[3]], labels[[4]]), "D:/results plots/sar_diversity_intervals.htm")
+
+
+```
+
+
+#Different population brackets
+```{r}
+preped_data <- save
+preped_data$eth_short <- preped_data$diff_eth_mindist
+preped_data$er_majority_1 <- as.factor(preped_data$er_majority_1)
+
+  pop_lowbounds <- c(500,1000,3000)
+  pop_highbounds <- c(1000,3000,1000000)
+    
+  final_j <- length(pop_lowbounds) + 1
+  count <- 1
+    
+  models <- list()
+  modelnames <- list()
+
+ for (j in 1:final_j){
+   
+      if (j != final_j){
+        relevant <- subset(preped_data, preped_data$pop2012 >= pop_lowbounds[j])
+        relevant <- subset(relevant, relevant$pop2012 <= pop_highbounds[j])
+        pop_size <- paste(pop_lowbounds[j], " - ",pop_highbounds[j])
+      }
+      if (j == final_j){
+        relevant <- subset(preped_data, preped_data$pop2012 >= min_pop)
+        pop_size <- "all larger than min"
+      }
+
+   models[[j]] <- runsar(fit_pref, relevant, 5, "sac")
+   modelnames[[j]] <- pop_size
+ } 
+    
+htmlreg(models, digits = 3, file  = "D:/results plots/sar_different_pops.htm", stars = c(0.001, 0.01, 0.05, 0.1), custom.model.names = c(as.character(modelnames)))
+
+screenreg(models, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1), custom.model.names = c(c(as.character(modelnames))))
+
+```
+
+
+#Different zones
+```{r}
+preped_data <- save
+preped_data$eth_short <- preped_data$diff_eth_mindist
+preped_data$er_majority_1 <- as.factor(preped_data$er_majority_1)
+
+    zones <- c(1,0)
+    final_j <- 3
+    count <- 1
+    
+  models <- list()
+  modelnames <-  c("Disputed territory", "Uncontested - central government", "All settlements")
+
+
+ for (j in 1:3){
+   
+      if (j != final_j){
+        relevant <- subset(preped_data, preped_data$disputed == zones[j] & preped_data$pop2012 >= min_pop)
+     
+        pop_size <- zones[j]
+      }
+      if (j == final_j){
+        relevant <- subset(preped_data, preped_data$pop2012 >= min_pop)
+        pop_size <- "All"
+      }
+   models[[j]] <- runsar(fit_pref, relevant, 5, "sac")
+ } 
+  
+ relevant <- subset(preped_data, preped_data$pop2012 >= min_pop & preped_data$er_majority_1 == "Arab Sunni Muslim")
+ sunnionly <- runsar(fit_5, relevant, 5, "sac")
+ 
+ models[[4]] <- runsar(fit_5, relevant, 5, "sac")
+ 
+htmlreg(models, digits = 3, file  = "D:/results plots/sar_diff_areas.htm", stars = c(0.001, 0.01, 0.05, 0.1), custom.model.names = c("disputed region", "uncontested region", "all settlements", "Sunni arab settlements only"))
+
+screenreg(models, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1), custom.model.names = c( "disputed region", "uncontested region", "all settlements", "Sunni arab settlements only"))
+
+```
+
+
+
+
+
+Different strategies for controlling for spatial dependence 
+```{r}
+library(lfe)
+preped_data <- save
+preped_data$eth_short <- preped_data$diff_eth_mindist
+preped_data$er_majority_1 <- as.factor(preped_data$er_majority_1)
+
+
+relevant <- preped_data
+
+#lm(log(pct_recovered) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth + (er_majority_1)  , data = relevant)  
+
+robustse <- felm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth + (er_majority_1)  |0|0|district, data = relevant)
+
+fe <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth + (er_majority_1) + district, data = relevant)
+
+lm <- lm(log(pct_recovered+1) ~ (eth_short) + log(duringfrac+1)   + months_during + timetrend + nearest_hwy_dist + log(closest_bigcity_dist) + log(pop2012) + log(pop_density)  + log(lumpercap_before) + viirs_pre_growth + (er_majority_1), data = relevant)
+
+
+sar_1 <- runsar(fit_pref, relevant, k, "sac")
+sar_2 <- runsar(fit_pref, relevant, k, "error")
+sar_3 <- runsar(fit_pref, relevant, k, "lag")
+
+#gstsls <- summary(sar_2)[26]
+#gstsls <- as.data.frame(gstsls)
+#colnames(gstsls) <- c("estimate", "std. error", "z value", "p value")
+#stargazer(gstsls, type="text", summary = F)
+
+models <- list(lm, robustse, fe, sar_1, sar_2, sar_3)
+htmlreg(models, digits = 3, file  = "D:/results plots/sar_diff_strategies.htm", omit.coef = ("district"), custom.model.names = c("OLS", "Clustered SEs", "District FE", "Simultaneous SAR", "Error SAR", "Lag SAR" ), stars = c(0.001, 0.01, 0.05, 0.1))
+
+screenreg(models, digits = 3, stars = c(0.001, 0.01, 0.05, 0.1),  omit.coef = ("district"), custom.model.names = c("OLS", "Clustered", "FE", "Simultaneous SAR", "Error SAR", "Lag SAR"))
+
+
+```
+
+Calculate descriptive village statistics for the time-series SAR
+```{r}
+intervals <- as.Date(c( "2017-06-01", "2017-09-01", "2018-01-01", "2018-03-01", "2018-06-01", "2018-09-01", "2018-12-01"))
+relevant <- update_dv_commontime(covar_matrix, intervals)
+relevant <- prepare_covar_matrix(relevant)
+#save <- relevant
+#relevant <- relevant[relevant$diff_eth_count>=1, ]
+#relevant <- save
+relevant <- relevant[!is.na(relevant$`2017-06-01`), ]
+ethsums_ordered <- settlement_characteristics(relevant)
+stargazer(ethsums_ordered, summary = F, title = "Settlemets in dataset - multiple timepoint regression", out = "D:/results plots/settlement_overview_timesar.htm", type="html")
+```
+
+
+
+
+######
+MAPPING
+######
+```{r}
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(data.table)
+library(ggrepel)
+library(tidyverse)
+
+
+
+#library(devtools)
+library(ggplot2)
+library(ggmap)
+#install.packages("Rcpp")
+#devtools::install_github("dkahle/ggmap")
+
+
+#test <- get_stamenmap(bbox = c(38.7923405291, 29.0990251735, 48.5679712258, 37.3852635768), maptype = "terrain")
+#plot(test)
+
+
+#google maps
+ggmap::register_google(key = "AIzaSyCJ1ZAt21LMP55BK8luvYIYeHtjyfodlcY")
+
+p <- ggmap(get_googlemap(center = c(lon = 43.11889, lat = 35),
+                    zoom = 7, scale = 1,
+                    maptype ='hybrid',
+                    color = 'color')) + theme_grey() + ggtitle("Map") 
+
+p <- p + geom_point(aes(x = Longitude, y = Latitude,  colour = log(required_recovery_completed+2)), data = relevant, size = 3) + theme(legend.position="bottom")
+
+ggsave("test_map.png", plot =  p, path = "D:/results plots", width = 20, height = 20)  
+```
+
+######
+OTHER
+######
+
+
+Duringfrac at different village sizes 
+```{r}
+#preped_data <- prepare_covar_matrix(covar_matrix)
+results <- matrix(nrow = 7, ncol = 6)
+preped_data <- save
+lowbounds <- c(500,1000, 3000, 5000, 10000)
+hibounds <- c(1000,3000, 5000, 10000, 10000000)
+
+for (i in 2:6){
+  lowbound <- lowbounds[i-1]
+  hibound <- hibounds[i-1]
+  subset <- preped_data[preped_data$pop2012>= lowbound & preped_data$pop2012 <= hibound, ]
+  results[2, i] <- (round(mean(subset$duringfrac),3))
+  results[3, i] <- (round(median(subset$duringfrac),3))
+  results[4, i] <- round(sd(subset$duringfrac),3)
+  results[5, i] <- round(nrow(subset),3)
+  results[6, i] <- (round(max(subset$duringfrac),3))
+  results[7, i] <- (round(min(subset$duringfrac),3))
+
+
+  results[2,1] <- c("mean")
+  results[3,1] <- c("median")
+  results[4,1] <- c("std. dev.")
+  results[5,1] <- c("obs")
+  results[6,1] <- c("min")
+  results[7,1] <- c("max")
+  
+  results[1,1] <- c("population bracket")
+  results[1,2] <- c("1000-3000")
+  results[1,3] <- c("3000-5000")
+  results[1,4] <- c("5000-10000")
+  results[1,5] <- c("10000 + ")
+}
+#(results, type = "text")
+  # filename <- paste("D:/results plots/regression output/duringfrac_output_gsynth_",use_gsynth,"_minmonths_",min_months_master,".htm", sep="")
+   
+stargazer(results, type = "html", title = "Fraction of pre-invasion light lost during occupation", type = "text", column.sep.width =  "10pt")
+
+
+```
+
+
+#########
+LIBERATION PLOT
+########
+```{r} 
+relevant <- save
+  
+  
+#isis takeovers
+  occ <- table(relevant$date_invaded)
+  occ <- as.data.frame(occ)
+  occ$Var1 <- as.Date(occ$Var1)
+  occ$cum_occ <- cumsum(occ$Freq)
+  #add one blank one before to make the reference counter work
+  blank <- occ[1, ]
+  blank$Var1 <- as.Date("2013-01-01")
+  blank$Freq <- 0
+  blank$cum_occ <- 0
+  
+  occ <- rbind(blank, occ)
+
+#isis liberations
+  lib <- table(relevant$date_liberated)
+  lib <- as.data.frame(lib)
+  lib$Var1 <- as.Date(lib$Var1)
+  lib$cum_lib <- cumsum(lib$Freq)
+  
+#add the blank one to the top
+  colnames(blank) <- c("Var1", "Freq", "cum_lib")
+  lib <- rbind(blank, lib)
+  
+#build full panel
+  dateseries <- read.csv2("D:/panel construction/support/date_panel.csv")
+  dateseries$spacerdates <- as.Date(dateseries$spacerdates, "%m/%d/%Y")
+  dateseries <- as.data.frame(dateseries)
+  dateseries$net_occ <- 0
+  
+  #because occ and lib dates don't hit every month
+  last_filled_occ_index <- 1
+  last_filled_lib_index <- 1
+  
+  #load
+  for (m in 1:nrow(dateseries)){
+    
+    target_date <- dateseries$spacerdates[m]
+    
+    occ_index <- match(target_date, occ$Var1)
+    num_occ <- ifelse(!is.na(occ_index), occ$cum_occ[occ_index], occ$cum_occ[last_filled_occ_index])
+    if (!is.na(occ_index)){
+      last_filled_occ_index <- occ_index
+    }
+    
+    
+    
+    lib_index <- match(target_date, lib$Var1)
+    num_lib <- ifelse(!is.na(lib_index), lib$cum_lib[lib_index], lib$cum_lib[last_filled_lib_index])
+      if (!is.na(lib_index)){
+      last_filled_lib_index <- lib_index
+    }
+    
+    dateseries$net_occ[m] <- num_occ - num_lib
+    
+  }
+  
+  dateseries <- dateseries[substr(dateseries$spacerdates,1,4) != "2012", ]
+  
+  
+  datelib <- ggplot(dateseries, aes(x = spacerdates, y = net_occ)) + scale_x_date() + geom_point() + geom_line() + theme_grey() + xlab("Date") + ylab("Number of ISIS-controlled settlements") + ggtitle("Number of ISIS-controlled Iraqi settlements by date")   + theme(axis.text=element_text(size=13), axis.title=element_text(size=15), plot.title = element_text(size=18), plot.subtitle = element_text(size = 14)) 
+  
+   ggsave("datelib.png", plot = datelib, path = "D:/results plots", width = 20, height = 6)  
+  
+```
+
+```{r}
+
+```
+
+######################
+DESCRIPTIVE STATISTICS
+######################
+
+Settlement charactersitics
+```{r}
+#calculate ethsums
+#relevant <- prepare_covar_matrix(covar_matrix)
+
+
+settlement_characteristics <- function(relevant){
+  
+  relevant$unique <- 1
+  
+  #total villages
+  ethsums <- aggregate(relevant$unique, by = list(relevant$er_majority_1), FUN = sum)
+  ethsums$Group.1 <- as.character(ethsums$Group.1)
+  
+  #pct of total pop
+  pop <- aggregate(relevant$pop2012, by = list(relevant$er_majority_1), FUN = sum)
+  pop$Group.1 <- as.character(pop$Group.1)
+  pop$x <- round(pop$x, 0)
+  
+  total_eth <- sum(pop$x) #for percentages
+  pop$x <- (pop$x/total_eth)*100
+  pop$x <- paste(round(pop$x, 1),"%", sep="")
+  ethsums <- cbind(ethsums, pop[,2])
+  
+  #median settlement pop
+  medianpop <- aggregate(relevant$pop2012, by = list(relevant$er_majority_1), FUN = median)
+  medianpop$Group.1 <- as.character(medianpop$Group.1)
+  medianpop$x <- round(medianpop$x, 0)
+  ethsums <- cbind(ethsums, medianpop[,2])
+  
+  #median settlement diversity score
+  dscore <- aggregate(relevant$diff_eth_mindist, by = list(relevant$er_majority_1), FUN = median)
+  dscore$Group.1 <- as.character(dscore$Group.1)
+  dscore$x <- round(dscore$x, 3)
+  ethsums <- cbind(ethsums, dscore[,2])
+  colnames(ethsums) <- c("Ethno-religious group", "Number of settlements", "Pct. of total population", "Median settlement pop.", "Median settlement diversity score")
+ethsums_ordered <- ethsums[order(ethsums$`Number of settlements`, decreasing = T), ]
+colnames(ethsums_ordered) <- c("Ethno-religious group", "Number of settlements", "Pct. of total population", "Median settlement pop.", "Median settlement diversity score")
+
+  return(ethsums)
+}
+
+relevant <- save
+ethsums_ordered <- settlement_characteristics(relevant)
+
+stargazer(ethsums_ordered, summary = F, title = "Settlemets in dataset", out = "D:/results plots/settlement_overview.htm", type="html")
+
+
+```
+
+ER diversity and recovery: simple bivariate plot
+```{r}
+bivariate_er <- qplot(relevant$diff_eth_mindist,log(relevant$pct_recovered+1)) + theme_grey() + geom_smooth(method = "lm") + xlab("Diversity index score ??") + ylab("log(fraction of pre-invasion light recovered + 1)") + ggtitle("Diversity score vs. recovery")
+ggsave("bivariate_er.png", plot = bivariate_er, path = "D:/results plots", width = 10, height = 6) 
+```
+
+Median settlement light trend at different ER diversity score quantiles
+
+```{r}
+all <- build_local_plot("All", relevant, "diversity", c(.33, .66), as.Date("2013-11-01"), c("Middle third (0.1 < ?? < 0.25)", "Most diverse third (?? >= 0.25)", "Most homogenous third (?? <= 0.1)"))
+all <- all + ggtitle("Median light trends of settlements in different diversity quantiles")
+ggsave("bivariate_trends.png", plot = all, path = "D:/results plots", width = 10, height = 6) 
+```
+
+Diversity scores after standardization
+
+```{r}
+dscore_hist <- qplot(relevant$diff_eth_mindist) + theme_grey() + ggtitle("Histogram of diversity scores ?? (after standardization)") + xlab("Diversity score ??") + ylab("frequency")
+ggsave("dscore_hist.png", plot = dscore_hist, path = "D:/results plots", width = 8, height = 4) 
+```
+
+```{r}
+
+#read in ILA II data
+ila_2 <- read.csv("D:/data/IDPs/ILA_II/ILA_2_idps.csv")
+ila_2 <- as.data.frame(ila_2)
+colnames(ila_2) <- c("group", "idp_pop")
+total_idp <- sum(ila_2$idp_pop)
+ila_2$idp_pop <- (ila_2$idp_pop/total_idp )*100
+ila_2$idp_pop <- paste(round(ila_2$idp_pop, 1),"%", sep="")
+
+#read in ILA III data
+ila_3 <- read.csv("D:/data/IDPs/ILA_III/ILA_3_idps.csv")
+colnames(ila_3) <- c("group", "idp_pop_ila3")
+ila_3$idp_pop_ila3 <- paste(round(ila_3$idp_pop_ila3,1),"%", sep="")
+
+
+
+ethsums <- merge(ethsums, ila_2,  by="group")
+ethsums <- merge(ethsums, ila_3,  by="group")
+
+stargazer(ethsums, summary = F, title = "Ethnicity", out = "D:/results plots/ethnicity.htm", type="html")
+
+survey <- matrix(nrow = 4, ncol = 3)
+colnames(survey) <- c("question", "Other", "Sunni Arab")
+survey[1,1] <- "feel unwelcome"
+survey[1,2] <- round(sum(relevant$feel_unwelcome[relevant$sunniarab==0])/ sum(relevant$sunniarab == 0),2)*100
+survey[1,3] <- round(sum(relevant$feel_unwelcome[relevant$sunniarab==1])/ sum(relevant$sunniarab == 1),2)*100
+survey[2,1] <- "feel uncomfortable"
+survey[2,2] <- round(sum(relevant$feel_uncomfortable[relevant$sunniarab==0])/ sum(relevant$sunniarab == 0),2)*100
+survey[2,3] <- round(sum(relevant$feel_uncomfortable[relevant$sunniarab==1])/ sum(relevant$sunniarab == 1),2)*100
+survey[3,1] <- "some ethno-religious or group bias"
+survey[3,2] <- round(sum(relevant$some_ethnic_bias[relevant$sunniarab==0])/ sum(relevant$sunniarab == 0),2)*100
+survey[3,3] <- round(sum(relevant$some_ethnic_bias[relevant$sunniarab==1])/ sum(relevant$sunniarab == 1),2)*100
+survey[4,1] <- "mistrust between groups"
+survey[4,2] <- round(sum(relevant$mistrust_any[relevant$sunniarab==0])/ sum(relevant$sunniarab == 0),2)*100
+survey[4,3] <- round(sum(relevant$mistrust_any[relevant$sunniarab==1])/ sum(relevant$sunniarab == 1),2)*100
+
+stargazer(survey, summary = F, title = "Survey responses", out = "D:/results plots/survey_responses_ethnicity.htm", type="html")
+
+##
+trim <- relevant[is.na(relevant$iom_distance_if_interp) | as.numeric(relevant$iom_distance_if_interp) < 7, ]
+trim <- rescale_diversity(trim)
+trim$mistrust_any <- ifelse(!is.na(trim$mistrust_any) & trim$mistrust_any > 0, 1, trim$mistrust_any)
+trim$mistrust_ethgroups <- ifelse(!is.na(trim$mistrust_ethgroups) & trim$mistrust_ethgroups> 0, 1, trim$mistrust_ethgroups)
+describeBy(trim$diff_eth_mindist, trim$mistrust_ethgroups)
+describeBy(trim$diff_eth_mindist, trim$some_ethnic_bias)
+
+t.test(trim$diff_eth_mindist[trim$some_ethnic_bias==1], trim$diff_eth_mindist[trim$some_ethnic_bias==0])
+```
+
+```{r}
+
+preped_data <- prepare_covar_matrix(covar_matrix)
+relevant <- preped_data
+
+relevant$sunniarab_text <- ifelse(relevant$sunniarab==1, "sunniarab", "other")
+
+t.test(log(relevant$required_recovery_completed[relevant$nonsunni==1]+2), log(relevant$required_recovery_completed[relevant$nonsunni==0]+2))
+
+ggplot(relevant,aes(x=log(required_recovery_completed + 2))) +
+    geom_histogram(data=subset(relevant,nonyezidi_minority == 1),fill = "red", alpha = 0.2) +
+    geom_histogram(data=subset(relevant,nonyezidi_minority == 0),fill = "blue", alpha = 0.2) + theme_grey()
+
+
+
+#SINJAR
+library(plotly)
+sinjar <- relevant[relevant$district == "Sinjar" | relevant$district == "Al Baa'aj", ]
+sinjar <- sinjar[sinjar$ethnicity == "yezidi" | sinjar$ethnicity == "sunniarab", ]
+
+ggplot(sinjar,aes(x=log(required_recovery_completed + 2))) +
+    geom_histogram(data=subset(sinjar,ethnicity == 'sunniarab'),fill = "red", alpha = 0.2) +
+    geom_histogram(data=subset(sinjar,ethnicity == 'yezidi'),fill = "blue", alpha = 0.2) 
+
+
+
+
+ggplot(sinjar, aes(x=ethnicity, y= log(required_recovery_completed+2))) + geom_boxplot() + theme_grey() + geom_point() + ggtitle("Village recovery in Sinjar and Al-Ba'aaj districts")
+
+t.test(log(sinjar$lumpercap_before[sinjar$nonsunni==1]+2), log(sinjar$required_recovery_completed[sinjar$nonsunni==0]+2))
+
+#NINEWA
+ninewa <- relevant[relevant$district == "Talkif " | relevant$district == "Al Hamadaniea" | relevant$district == "Al Mousel", ]
+ggplot(ninewa, aes(x=sunniarab_text, y= log(required_recovery_completed+2))) + geom_boxplot() + theme_grey() + geom_point() + ggtitle("Villare recovery in the Ninewa plain")
+
+t.test(log(ninewa$lumpercap_before[ninewa$nonsunni==1]+2), log(ninewa$required_recovery_completed[ninewa$nonsunni==0]+2))
+
+
+#TELAFAR
+talafar <- relevant[relevant$district == "Tala'afar" | relevant$district == "Al Hadhar", ]
+ggplot(talafar, aes(x=sunniarab_text, y= log(required_recovery_completed+2))) + geom_boxplot() + theme_grey() + geom_point() + ggtitle("village recovery in Tal Afar")
+
+
+
+
+temp <- relevant[relevant$shiaturk == 1, ]
+
+ggplot(relevant,aes(x=log(required_recovery_completed + 2))) +
+    geom_histogram(data=subset(relevant,nonsunni == 0),fill = "red", alpha = 0.2) +
+    geom_histogram(data=subset(relevant,nonsunni == 1),fill = "blue", alpha = 0.2)
+
+relevant$pct_damaged <- 100 - (relevant$pct_undamaged)
+ggplot(relevant, aes(x=pmu_present, y= log(required_recovery_completed+1))) + geom_boxplot() + theme_grey() + geom_point() + ggtitle("Damage")# + geom_text(aes(label = district))
+
+
+
+ggplot(relevant,aes(x=(eth_short))) +
+    geom_histogram(data=subset(relevant,iom_sunniarab == 1),fill = "red", alpha = 0.2) +
+    geom_histogram(data=subset(relevant,iom_sunniarab == 0),fill = "blue", alpha = 0.2) 
+
+#####
+preped_data <- prepare_covar_matrix(covar_matrix)
+
+control_relevant <- preped_data[preped_data$iom_distance_if_interp < 10 & !is.na(preped_data$iom_joint_control) & relevant$district != "Al Baa'aj", ]
+
+qplot(as.character(control_relevant$iom_joint_control), control_relevant$diff_eth_mindist) + geom_boxplot()
+t.test(control_relevant$diff_eth_mindist[control_relevant$iom_joint_control==1], control_relevant$diff_eth_mindist[control_relevant$iom_joint_control==0])
+
+describeBy(control_relevant$diff_eth_mindist, control_relevant$iom_joint_control)
+
+```
+
+#########################
+COVARIATE HISTOGRAMS
+#########################
+
+Covariate of interest selection and definition:
+
+```{r}
+#covar_vars <- c("viirs_pre_growth", "lumpercap_before", "pop_density", "pop2012", "date_liberated", "months_during", "closest_bigcity_dist", "frac_cropland_modis", "required_recovery_completed", "zone", "fid", "district",  "duringfrac", "nearest_hwy_dist", "date_liberated")
+
+covar_vars <- c("viirs_pre_growth", "lumpercap_before", "pop_density", "pop2012", "date_liberated", "months_during", "closest_bigcity_dist",  "nearest_hwy_dist", "duringfrac", "pct_recovered", "zone", "fid", "district")
+
+covar_labels_raw <- c( "Avg. monthly growth rate, Nov. 2012-Nov. 2013", "Per capita light before invasion", "Population density (2012)", "2012 population",  "Date liberated", "Length of occupation (months)", "Driving distance to closest big city (km)", "Dist. to nearest highway (km)", "Frac. light remaining during", "pct_recovered", "zone", "fid", "district" )
+
+covar_labels <- c( "Avg. monthly growth rate, Nov. 2012-Nov. 2013", "Per capita light before invasion (LOG)", "Population density (2012) (LOG)", "2012 population (LOG)",  "Date liberated", "Length of occupation (months)", "Driving distance to closest big city (km) (LOG)", "Dist. to nearest highway (km)", "Frac. light remaining during (LOG + 1)", "pct_recovered", "zone", "fid", "district" )
+
+
+#covar_labels_raw <- c( "Avg. monthly growth rate, May 2012-May 2013", "Per capita light before invasion", "Population Density", "2012 population",  "Date liberated", "Length of occupation (months)", "Driving distance to closest big city (km)",   "Fraction of surrounding area cropland", "rrq", "zone", "fid", "district",  "Frac. light remaining during", "Dist. to nearest highway", "Date liberated")
+
+#covar_labels <- c( "Avg. monthly growth rate, May 2012-May 2013", "(LOG) Per capita light before invasion", "(LOG) Population density", "(LOG) 2012 population",  "Date liberated", "Length of occupation (months)",  "(LOG) Driving distance to closest big city (km)", "Fraction of surrounding area cropland", "log required recovery completed", "zone", "fid", "district","Frac. light remaining during (log)", "Dist. to nearest highway (LOG)", "Date liberated")
+```
+
+```{r}
+#preped_data <- prepare_covar_matrix(covar_matrix)
+preped_data <- save
+relevant <- subset(preped_data, preped_data$pop2012 >= min_pop)
+numbers <- subset(relevant, select = c(covar_vars))  
+
+###RAW HISTOGRAMS###
+numbers <- as.data.frame(t(numbers))
+numbers$matchorder <- match(rownames(numbers), covar_vars)
+numbers <- numbers[order(numbers$matchorder, decreasing = F), ]
+numbers <- subset(numbers, select = -matchorder)
+numbers <- as.data.frame(t(numbers))
+
+
+hist <- numbers
+
+#order and take out irrelevant ones
+
+hists <- list()
+count <- 1 #counts position in the vector (since this may be different from FID)
+
+for (i in 1:length(hist)){
+  hist_data <- as.numeric(as.character(hist[, i]))
+  hist_data <- as.data.frame(hist_data)
+  colnames(hist_data) <- "iv"
+  if (covar_vars[i] != "date_liberated" & covar_vars[i] != "zone" & covar_vars[i] != "fid" & covar_vars[i] != "pct_recovered" & covar_vars[i] != "district"){ #things NOT to make hists of
+    hists[[count]] <- ggplot(hist_data, aes(x=iv)) + geom_histogram() + ggtitle(covar_labels_raw[i]) + xlab(covar_labels_raw[i])  + theme_grey() 
+    count <- count + 1
+  }
+}
+
+covar_hists <- do.call("grid.arrange", c(hists, ncol=3))
+covar_hists_lab <- annotate_figure(covar_hists, top = text_grob("Histograms of independent variables (before logging)", face = "bold", size = 18))
+ggsave("covar_hists_raw.png", plot = covar_hists_lab, path = "D:/results plots", width = 15, height = 17)  
+
+
+
+#HISTOGRAMS WITH LOGGING
+numbers <- subset(relevant, select = c(covar_vars))  
+
+numbers$pop2012 <- log(numbers$pop2012)
+numbers$closest_bigcity_dist <- log(numbers$closest_bigcity_dist)
+numbers$pop_density <- log(numbers$pop_density)
+numbers$lumpercap_before <- log(numbers$lumpercap_before)
+numbers$duringfrac <- log(numbers$duringfrac)
+#numbers$required_recovery_completed <- log(numbers$required_recovery_completed + 6)
+
+hist <- numbers
+hists <- list()
+count <- 1 #counts position in the vector (since this may be different from FID)
+
+for (i in 1:length(hist)){
+  hist_data <- hist[, i]
+  hist_data <- as.data.frame(hist_data)
+  colnames(hist_data) <- "iv"
+  if (is.numeric(hist_data$iv) & covar_vars[i] != "date_liberated" & covar_vars[i] != "zone" & covar_vars[i] != "fid" & covar_vars[i] != "pct_recovered" & covar_vars[i] != "district"){ #things NOT to make hists of
+    hists[[count]] <- ggplot(hist_data, aes(x=iv)) + geom_histogram() + ggtitle(covar_labels[i]) + xlab(covar_labels[i])  + theme_grey() 
+    count <- count + 1
+  }
+}
+
+covar_hists <- do.call("grid.arrange", c(hists, ncol=3))
+covar_hists_lab <- annotate_figure(covar_hists, top = text_grob("Histograms of independent variables (after selective logging)", face = "bold", size = 18))
+ggsave("covar_hists_logs.png", plot = covar_hists_lab, path = "D:/results plots", width = 15, height = 17) 
+```
+
+Special hists
+```{r}
+relevant <- save #preped_data[preped_data$pop2012>=min_pop, ]
+
+#DV
+hists <- list()
+
+hists[[1]] <- ggplot(relevant, aes(x=pct_recovered)) + geom_histogram() + ggtitle("No logging") + xlab("Fraction of pre-invasion light recovered")  + theme_grey() 
+
+hists[[2]] <- ggplot(relevant, aes(x=log(pct_recovered+1))) + geom_histogram() + ggtitle("Log + 1") + xlab("Fraction of pre-invasion light recovered (Log + 1)")  + theme_grey() 
+
+covar_hists <- do.call("grid.arrange", c(hists, ncol=2))
+covar_hists_lab <- annotate_figure(covar_hists, top = text_grob("DV: fraction of pre-invasion light recovered by Dec. 2018", face = "bold", size = 18))
+ggsave("dv_raw_logging.png", plot = covar_hists_lab, path = "D:/results plots", width = 13, height = 5) 
+
+
+```
+
+#######
+##VALIDATION
+#######
+
+#in-sample performance and residuals
+
+```{r}
+library(broom)
+library(dplyr)
+library(ggrepel)
+
+preped_data <- prepare_covar_matrix(covar_matrix)
+relevant <- preped_data[preped_data$pop2012 >= min_pop  & preped_data$required_recovery_completed>=0, ]
+
+  
+  #estimate model
+  est_model <- felm(log(required_recovery_completed + 1) ~ log(closest_bigcity_dist)  + timetrend + months_during + I(duringfrac^2) + log(pop_density) + log(pop2012) + + sunniarab+ kurddist_10k + frac_cropland_modis   + log(lumpercap_before)   + log(viirs_pre_growth+1) |0|0|district, data = relevant)
+  
+  test <- relevant #test on all in sample data
+  
+  #acess performance
+  predicted_values <- est_model$coefficients[1] + est_model$coefficients[2]*log(test$closest_bigcity_dist)+ est_model$coefficients[3]*test$timetrend + est_model$coefficients[4]*test$months_during+ est_model$coefficients[5]*(test$duringfrac^2)+ est_model$coefficients[6]*log(test$pop_density)  + est_model$coefficients[7]*log(test$pop2012) + est_model$coefficients[8]*test$sunniarab   + est_model$coefficients[9]*test$kurddist_10k  + est_model$coefficients[10]*test$frac_cropland_modis  + est_model$coefficients[11] *log(test$lumpercap_before)   + est_model$coefficients[12]*log(test$viirs_pre_growth + 1)
+#+ est_model$coefficients[13]*test$dmsp_growth
+  
+  performance <- as.data.frame(log(predicted_values + 1))
+  performance$log_true_rrc <- log(test$required_recovery_completed + 1)
+  
+  #performance <- as.data.frame(predicted_values)
+  #performance$log_true_rrc <- test$required_recovery_completed 
+  
+  performance$fid <- test$fid
+  performance$residuals <- as.numeric(est_model$residuals)
+  performance$subdistrict <- test$subdistrict
+  colnames(performance) <- c("log_predicted_rrc", "log_true_rrc", "fid", "residuals", "subdistrict")
+    
+  #access
+  fit <- lm(performance$log_true_rrc ~ performance$log_predicted_rrc)
+
+  
+#residual plot 
+ggplot(aes(x = log_predicted_rrc, y = residuals,  label = fid), data = performance) + geom_smooth(method="lm") + geom_point() + geom_text(aes(label=subdistrict),hjust=0, vjust=0) + theme_grey() #+ ggtitle(as.character(glance(fit)[1])) +xlim(0,2) + ylim(0,2)
+
+#fit ploy
+ggplot(aes(x = log_predicted_rrc, y = log_true_rrc,  label = fid), data = performance) + geom_smooth(method="loess") + geom_point() + geom_text(aes(label=fid),hjust=0, vjust=0) + theme_grey() +xlim(0,2) + ylim(0,2)
+
+
+rsqs <- as.data.frame(rsqs)
+```
+
+#cross-validation 
+```{r}
+library(broom)
+library(dplyr)
+
+preped_data <- prepare_covar_matrix(covar_matrix)
+
+k <- 5
+results <- matrix(nrow = 3, ncol = 500)
+count <- 1
+
+for (j in seq(1000,1001,0.01)){
+
+  relevant <- preped_data[preped_data$pop2012 >= j, ]
+  
+  
+  size_of_test <- round((nrow(relevant) / k),0)
+  
+  rsqs <- list()
+  plots <- list()
+  
+  for (i in 1:k){
+    train <- sample_n(relevant, nrow(relevant)-size_of_test, replace = F)
+    test <- sample_n(relevant, size_of_test, replace = F)
+    
+    #estimate model
+   # est_model <- felm(log(required_recovery_completed + 1) ~ log(closest_bigcity_dist)  + timetrend + months_during + I(duringfrac^2) + log(pop_density) + log(pop2012) + + sunniarab+ kurddist_10k + frac_cropland_modis   + log(lumpercap_before)   + log(viirs_pre_growth+1)|0|0|district, data = train)
+    
+    est_model <- felm(log(required_recovery_completed + 1) ~ log(closest_bigcity_dist) + log(surroundingpop+1)  + timetrend + months_during + (duringfrac) + log(pop_density) + log(pop2012) + minority + kurddist_10k + frac_cropland_modis   + log(lumpercap_before)   + log(viirs_pre_growth+1) + dmsp_growth, data = train)
+    
+    
+    #acess performance
+    predicted_values <- est_model$coefficients[1] + est_model$coefficients[2]*log(test$closest_bigcity_dist)+ est_model$coefficients[3]*test$timetrend + est_model$coefficients[4]*test$months_during+ est_model$coefficients[5]*test$duringfrac+ est_model$coefficients[6]*log(test$pop_density)  + est_model$coefficients[7]*log(test$pop2012) + est_model$coefficients[8]*test$sunniarab   + est_model$coefficients[9]*test$kurddist_10k  + est_model$coefficients[10]*test$frac_cropland_modis  + est_model$coefficients[11] *log(test$lumpercap_before)   + est_model$coefficients[12]*log(test$viirs_pre_growth + 1)
+    
+    performance <- as.data.frame(log(predicted_values + 1))
+    performance$log_true_rrc <- log(test$required_recovery_completed + 1)
+    colnames(performance) <- c("log_predicted_rrc", "log_true_rrc")
+      
+    #access
+    fit <- lm(performance$log_true_rrc ~ performance$log_predicted_rrc)
+    rsqs[[i]] <- glance(fit)[2]
+  plots[[i]] <- qplot(x = performance$log_predicted_rrc, y = performance$log_true_rrc) + geom_smooth(method="lm")
+  }
+  
+  rsqs <- as.data.frame(rsqs)
+ 
+  results[1, count] <- j
+  results[2, count] <- mean(as.numeric(rsqs))
+  results[3, count] <- nrow(relevant)
+  count <- count + 1
+  print(count)
+}  
+
+results <- t(results)
+results <- as.data.frame(results)
+colnames(results) <- c("minpop", "r2", "obs")
+
+qplot(results$minpop, results$r2) + theme_grey()
+```
+
+#########################
+COVARIATE PLOTS
+#########################
+
+
+Assembles data to make the overall plot, plots it, reutrns it
+```{r}
+descriptive_plot <- function(numbers, target_stat_index, pop_brackets){
+  #what type of plot to make
+  if (numbersnames[target_stat_index] == "Ethnicity" | numbersnames[target_stat_index] == "holder" | numbersnames[target_stat_index] == "mixed_holder" | numbersnames[target_stat_index] == "district" | numbersnames[target_stat_index] == "lib_window_month"){
+    plottype <- "categorical"
+  } else if (numbersnames[target_stat_index] == "Date liberated"){
+    plottype <- "date"
+  } else {
+    plottype  <- "numeric"
+  }
+  
+  plotter <- prepare_plotter(numbers, plottype, target_stat_index, pop_brackets)
+  
+  g <- create_overall_plot(plotter, plottype)
+  return(g)
+}
+```
+
+Plots graphic of overall plot
+```{r}
+create_overall_plot <- function(plotter, plottype){
+  if (plottype == "numeric"){
+         g <- ggplot(plotter, aes(x = iv, y = recovery, color = (date_liberated))) + geom_point(aes(shape = popbracket), size = 2) + theme_grey()  + ggtitle("All Units") +  xlab(numbersnames[i]) + ylab("required recovery completed") + geom_smooth(method = "loess") +  theme(axis.text=element_text(size=14),
+            axis.title=element_text(size=16), plot.title = element_text(size=16, face = "bold")) + scale_shape_manual(values=c(15, 16, 17, 18)) + geom_text(aes(label=dist_fid),hjust=0, vjust=0, size = 3) + theme(legend.position="bottom", legend.text=element_text(size=14), legend.title=element_text(size=16), legend.box = 'vertical', legend.key.size = unit(2,"line")) 
+ #label = dist_fid
+     
+    } else if (plottype == "categorical") {
+         g <- ggplot(plotter, aes(x = iv, y = recovery, color = (date_liberated))) + geom_boxplot() + geom_point(aes(shape = popbracket), size = 2) + theme(axis.text=element_text(size=14),
+            axis.title=element_text(size=16), plot.title = element_text(size=16, face = "bold")) + scale_shape_manual(values=c(15, 16, 17, 18)) + geom_text(aes(label=dist_fid),hjust=0, vjust=0, size = 3) + theme(legend.position="bottom", legend.text=element_text(size=14), legend.title=element_text(size=16), legend.box = 'vertical', legend.key.size = unit(2,"line")) + theme_grey()
+           
+           
+      
+    } else if (plottype == "date"){
+           g <- ggplot(plotter, aes(x = iv, y = recovery, color = (date_liberated))) + geom_point(aes(shape = popbracket)) + theme_grey()  + scale_x_date() + ggtitle(numbersnames[i]) +  xlab(numbersnames[i]) + ylab("required recovery completed") + geom_smooth(method = "loess") + theme(axis.text=element_text(size=14),
+            axis.title=element_text(size=16), plot.title = element_text(size=16, face = "bold")) + scale_shape_manual(values=c(15, 16, 17, 18)) + geom_text(aes(label=dist_fid),hjust=0, vjust=0, size = 3) + theme(legend.position="bottom", legend.text=element_text(size=14), legend.title=element_text(size=16), legend.box = 'vertical', legend.key.size = unit(2,"line")) 
+    }
+  
+  return(g)
+}  
+```
+
+This function assembles the dataset to be plotted
+```{r}
+prepare_plotter <- function(numbers, plottype, target_stat_index, pop_brackets){
+  
+  plotter <- cbind(numbers$required_recovery_completed, numbers[ ,target_stat_index], numbers$pop2012, numbers$date_liberated, numbers$zone, as.character(numbers$fid), as.character(numbers$district))
+   plotter <- as.data.frame(plotter)
+    colnames(plotter) <- c("recovery", "iv", "pop2012", "date_liberated", "zone", "dist_fid", "district")
+     
+  #response variable
+   if (plottype == "numeric"){
+        plotter$iv <- as.numeric(as.character(plotter$iv))
+      } else if (plottype == "categorical"){
+        plotter$iv <- as.character(plotter$iv)
+      } else if (plottype == "date"){
+         plotter$iv <- as.Date(plotter$iv)
+      }
+      
+  #other variables to be plotted
+      plotter$district <- as.character(plotter$district)
+      plotter$recovery <- as.numeric(as.character(plotter$recovery)) 
+       plotter$pop2012 <- as.numeric(as.character(plotter$pop2012))
+      plotter$date_liberated <- as.Date(plotter$date_liberated)
+      
+    #extract consistent population brackets
+      pct25 <- quantile(relevant$pop2012)[2]
+      pct50 <- quantile(relevant$pop2012)[3]
+      pct75 <- quantile(relevant$pop2012)[4]
+      
+      plotter$popbracket <- NA
+      plotter$popbracket <- ifelse(plotter$pop2012 < pct25, paste("below", pct25), plotter$popbracket)
+      plotter$popbracket <- ifelse(plotter$pop2012 >= pct25 & plotter$pop2012 < pct50, paste(pct25, "-",pct50), plotter$popbracket)
+      plotter$popbracket <- ifelse(plotter$pop2012 >= pct50 & plotter$pop2012 < pct75, paste(pct50, "-",pct75), plotter$popbracket)
+      plotter$popbracket <- ifelse(plotter$pop2012 >= pct75, paste("above", pct75), plotter$popbracket)
+      return(plotter)
+}
+```
+
+
+
+```{r}
+  descriptive_graphsaver <- function(filename, combined){
+    ggsave(filename, plot = combined, path = "D:/panel construction/covariates/200ppl run/covar_graphs", width = 12, height = 15, limitsize = FALSE)  
+    return("saved")
+  }
+```
+
+
+Complex plotter
+```{r}
+preped_data <- prepare_covar_matrix(covar_matrix)
+preped_data <- preped_data[!is.na(preped_data$zone), ]
+preped_data <- preped_data[preped_data$duringfrac<= 1 & preped_data$months_during >= 3, ]
+  
+  numbersnames <- covar_labels #c("Average annual growth rate, 2008-2012", "max pop loss", "Log Average monthly growth rate May 2012-May 2013", "Per capita light before (log)", "pop density (log)", "2012 population", "Ethnicity", "Date liberated","Acled fatalities (log + 1)", "Fraction of pre-invasion light recovered in first month after liberation (log + 1)", "Growth 2009 - 2012",  "Bridge intensity", "length of occupation (months)", "Fraction of pre-invasion light remaining at lowest point of occupation (log + 1)", "Driving distance to closest big city (km, log)", "district", "neggrowth", "pct recovered", "2012 population (log)", "zone", "dist fid")
+  
+  relevant <- subset(preped_data, pop2012 >= min_pop)
+  pop_brackets <- NA
+  
+  numbers <- subset(relevant, select = c(covar_vars)) #subset(relevant, select = c(dmsp_growth, max_pop_decrease, viirs_pre_growth, lumpercap_before, pop_density, pop2012, ethnicity, date_liberated, acled_fatalities, pct_recovered_firstmonth ,  dmsp_growth,  bridge_intensity, months_during, pct_destroyed, closest_bigcity_dist, district, negative_growth_pattern, pct_recovered, post_avg_monthly_growth, zone, dist_fid))  
+      
+      
+      #add the operators that are also in the regression
+numbers$viirs_pre_growth <- log(numbers$viirs_pre_growth + 1)
+numbers$closest_bigcity_dist <- log(numbers$closest_bigcity_dist)
+numbers$pop_density <- log(numbers$pop_density)
+numbers$lumpercap_before <- log(numbers$lumpercap_before)
+numbers$viirs_pre_growth <- log(numbers$viirs_pre_growth + 1)
+numbers$logpop2012 <- log(numbers$pop2012)
+numbers$required_recovery_completed <- log(numbers$required_recovery_completed + 1)
+
+    #remove negative growth patterns
+  #  numbers <- subset(numbers, numbers$negative_growth_pattern == 0)
+    numbers <- as.data.frame(numbers)
+
+      
+  for (i in 1:length(numbers)){
+    target_stat_index <- i
+    overall_plot <- descriptive_plot(numbers, target_stat_index, pop_brackets)
+    
+    #extract the legend 
+    legend <- get_legend(overall_plot)
+    
+    #assemble everything
+    overall_plot <- overall_plot + theme(legend.position = "none")
+    retitled_overall_plot <- overall_plot + theme(plot.title = element_blank()) #changes the name by gutting the old one and adding a new one
+    retitled_overall_plot <- retitled_overall_plot + ggtitle("Plots by region") + theme(plot.title = element_text(size=16, face = "bold", hjust= 0, vjust = 4))
+    
+    #create the faucet plot
+    faucet_plot <- retitled_overall_plot + facet_wrap( ~ zone, ncol=2, scales = "free") +  theme(strip.text.x = element_text(size = 12, face = "bold"))
+    
+    all_plots <- plot_grid(overall_plot, faucet_plot, ncol = 1)
+    withlegend <- plot_grid(all_plots, legend, rel_heights = c(5,1), ncol = 1)
+    
+    combined <- annotate_figure(withlegend, top = text_grob(paste("DV:", numbersnames[i]), color = "red", face = "bold", size = 18))
+   
+    
+    filename <- paste(numbersnames[i],".png", sep ="")
+         
+    saved <- NULL
+    attempt <- 0
+    while(is.null(saved) && attempt <= 10 ) {
+      attempt <- attempt + 1
+      try(
+        saved <- descriptive_graphsaver(filename, combined)
+          )
+     #   print(paste("save attempt is",attempt,sep=" "))
+  }
+
+ print(i)
+
+}
+  
+```
+
+######
+METHOD SHOP
+#####
+
+
+
+
+Step
+```{r}
+
+fit <- lm(duringfrac ~  log(closest_bigcity_dist)  + timetrend + months_during   + log(pop_density) + log(pop2012) + sunniarab+ kurddist_10k + frac_cropland_modis   + log(lumpercap_before)   + log(viirs_pre_growth+1) + log(surroundingpop+1) + max_pop_decrease+log(dist_isis_frontline) + log(dist_isis_frontline):log(surroundingpop+1), data = relevant)
+
+library(MASS)
+stepAIC(fit, direction = c("backward"),
+        trace = 1, keep = NULL, steps = 1000)
+
+summary(lm(duringfrac ~  months_during + log(pop_density) + frac_cropland_modis + log(lumpercap_before) + max_pop_decrease + log(dist_isis_frontline) , data = relevant))
+
+```
+
+
+

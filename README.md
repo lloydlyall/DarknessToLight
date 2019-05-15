@@ -39,6 +39,7 @@ Chunks 2 and 3 of R code must be set by the user: users input the filepath of wh
 
 The replication code requires the following free R packages to run. You will need to download them to run the replication code if you have not already. 
 (Metrics)
+
 (reshape2)
 (rsq)
 (ggplot2)

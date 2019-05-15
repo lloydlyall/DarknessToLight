@@ -38,8 +38,8 @@ This code replicates all the tables and core emperical results from this thesis 
 Chunks 2 and 3 of R code must be set by the user: users input the filepath of where the replication data is stored locally in chunk 2, and the filepath of where they want results to be stored in chunk 3 (the instructions are clear in the code). Chunk 4 contains a number of constants that can be optionally adjusted by the user, depending on which figures the user wants to create and which tests they want to run. The instructions are clearly delineated in the comments. 
 
 The replication code requires the following free R packages to run. You will need to download them to run the replication code if you have not already. 
-(Metrics)
 
+(Metrics)
 (reshape2)
 (rsq)
 (ggplot2)

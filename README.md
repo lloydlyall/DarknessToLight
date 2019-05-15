@@ -4,7 +4,7 @@ Replication code and data for "Ethno-Religious Diversity and Recovery After Conf
 # Overview
 The materials posted to this repository are sufficient to replicate every table and figure in the thesis from Chapter 3 through to the end of Appendix I with two exceptions:
 
--The maps and Figure 24 would require some additional assembly in a GIS software and Excel respectively
+-The maps and Figure 24 would require some additional assembly in a GIS software and Excel respectively.
 
 -The settlement-level IOM survey data on ethno-religious composition is potentially sensitive. For this reason it is not publicly available; I obtained written permission from IOM to use it. The parts of this dataset I use in this thesis could probably be considered public knowledge, but out of an abundance of caution, the publicly available dataset posted here excludes settlement-level ethno-religious composition information. The posted code replicates all the core empirical analysis of this thesis, but some results will be slightly different because the code excludes ethno-religious group dummies from the calculations. Users seeking to replicate specifications which include ethno-religious dummies should first obtain written permission from the IOM Iraq team to access the IOM ILA III dataset for Iraq with ethno-religious variables; I would then be happy to share the full dataset. 
 

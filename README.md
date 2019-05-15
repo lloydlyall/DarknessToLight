@@ -26,14 +26,14 @@ Running the publically avaliable R replication code requires the following 7 dat
 
 "settlement_diversity_scores", spatial data on diversity scores. 
 
-All of the above data files are avaliable on the GitHub and Stanford Libraries page for this project. Users can download them all, put them in the same folder, set it as their working directory (the first line in the R code) and begin. The replication file folder also contains shapefiles of these datasets, so users can open them in GIS software as well if they wish to. 
+All of the above data files are avaliable on the GitHub and Stanford Libraries page for this project in the public replicaiton data.zip file. Users can download them all, put them in the same folder, set it as their working directory (the first line in the R code) and begin. The replication file folder also contains shapefiles of these datasets, so users can open them in GIS software as well if they wish to. 
 
 If users were to gain permission from IOM to access the full dataset, they can add "ILA3_ethnicity.dbf" to their working directory - I will provide this file - and flip the global control "use_settlement_er_data" to TRUE). 
 
 
 
 # Replication Code
-This code replicates all the tables and core emperical results from this thesis - every table and figure from the beginning of Chapter 3 through to the end of Appendix 1 (except for the maps, which were created in QGIS). Replication code for the luminosity validation exercizes in Chapter 2 is avaliable on request. 
+The replication_code_public.Rmd RMarkdown code file contains code to replicate all the tables and core emperical results from this thesis - every table and figure from the beginning of Chapter 3 through to the end of Appendix 1 (except for the maps, which were created in QGIS), subject to the limitation detailed above. Replication code for the luminosity validation exercizes in Chapter 2 is avaliable on request. 
 
 Chunks 2 and 3 of R code must be set by the user: users input the filepath of where the replication data is stored locally in chunk 2, and the filepath of where they want results to be stored in chunk 3 (the instructions are clear in the code). Chunk 4 contains a number of constants that can be optionally adjusted by the user, depending on which figures the user wants to create and which tests they want to run. The instructions are clearly delineated in the comments. 
 

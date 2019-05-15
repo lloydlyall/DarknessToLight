@@ -13,14 +13,20 @@ Users seeking to replicate the thesis exactly using the IOM ILA III settlement-l
 Running the publically avaliable R replication code requires the following 7 data files:
 
 "control.dbf", spatial data on territorial control. 
-"luminosity_all.dbf", spatial data on luminosity for all settlements
-"Mosul_neighborhoods_lum.dbf", spatial data on luminosity for Mosul neighborhoods,
-""nearest_iom_point.dbf", spatial data on the location of IOM ILA III survey points relative to settlement locations
-"covariates.dbf", spatial data on all other covariates
-"date_panel.csv", a csv panel with dates 
+
+"luminosity_all.dbf", spatial data on luminosity for all settlements.
+
+"Mosul_neighborhoods_lum.dbf", spatial data on luminosity for Mosul neighborhoods.
+
+""nearest_iom_point.dbf", spatial data on the location of IOM ILA III survey points relative to settlement locations.
+
+"covariates.dbf", spatial data on all other covariates.
+
+"date_panel.csv", a csv panel with dates.
+
 "settlement_diversity_scores", spatial data on diversity scores. 
 
-All of the above data files are avaliable on the GitHub and Stanford Libraries page for this project. Download them all, put them in the same folder, set it as your working directory (the first line in the R code) and you are good to go. The replication file folder also contains shapefiles of these datasets, so users can open them in GIS software if they wish. 
+All of the above data files are avaliable on the GitHub and Stanford Libraries page for this project. Users can download them all, put them in the same folder, set it as their working directory (the first line in the R code) and begin. The replication file folder also contains shapefiles of these datasets, so users can open them in GIS software as well if they wish to. 
 
 If users were to gain permission from IOM to access the full dataset, they can add "ILA3_ethnicity.dbf" to their working directory - I will provide this file - and flip the global control "use_settlement_er_data" to TRUE). 
 

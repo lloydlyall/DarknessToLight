@@ -33,9 +33,9 @@ If users were to gain permission from IOM to access the full dataset, they can a
 
 
 # Replication Code
-This code replicates all the tables and core emperical results from this thesis - every table and figure from the beginning of Chapter 3 through to the end of Appendix 1 (except for the maps, which were created in QGIS, and figure 24, which requires creating the pie chart in Excel). Replication code for the luminosity validation exercizes in Chapter 2 is avaliable on request. 
+This code replicates all the tables and core emperical results from this thesis - every table and figure from the beginning of Chapter 3 through to the end of Appendix 1 (except for the maps, which were created in QGIS). Replication code for the luminosity validation exercizes in Chapter 2 is avaliable on request. 
 
-Chunks 2 and 3 of R code must be set by the user: input the filepath of where the replication data is stored on your computer in the chunk 2, and the filepath of where you want results to be stored in chunk 3 (the instructions are clear in the code). Chunk 4 contains a number of constants that can be optionally adjusted by the user, depending on which figures the user wants to create and which tests they want to run. The instructions are clearly delineated in the comments. 
+Chunks 2 and 3 of R code must be set by the user: users input the filepath of where the replication data is stored locally in chunk 2, and the filepath of where they want results to be stored in chunk 3 (the instructions are clear in the code). Chunk 4 contains a number of constants that can be optionally adjusted by the user, depending on which figures the user wants to create and which tests they want to run. The instructions are clearly delineated in the comments. 
 
 The replication code requires the following free R packages to run. You will need to download them to run the replication code if you have not already. 
 (Metrics)

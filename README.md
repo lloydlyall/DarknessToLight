@@ -2,7 +2,7 @@
 Replication code and data for "Ethno-Religious Diversity and Recovery After Conflict in Post-ISIL Iraq: A Geospatial Approach" (Lloyd Lyall, 2019). The thesis is avaliable at https://purl.stanford.edu/qb151vz4409. Readers are referred to the thesis Works Cited section for citations and acknowledgements. 
 
 # Overview
-The materials posted to this repository are sufficient to replicate every table and figure in the thesis from Chapter 3 through to the end of Appendix I with two exceptions:
+The emperical analysis of this thesis was conducted in the R programming language. The materials posted to this repository are sufficient to replicate every table and figure in the thesis from Chapter 3 through to the end of Appendix I in R with two exceptions:
 
 -The maps and Figure 24 would require some additional assembly in a GIS software and Excel respectively.
 

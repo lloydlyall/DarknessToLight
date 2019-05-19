@@ -1,5 +1,5 @@
 
-# Ethno-religious diversity and recovery after conflict in post-ISIL Iraq: A Geospatial Approach - Replication Code and Data
+# Ethno-Religious Diversity and Recovery After Conflict in Post-ISIL Iraq: A Geospatial Approach - Replication Code and Data
 
 Replication code and data for "Ethno-Religious Diversity and Recovery After Conflict in Post-ISIL Iraq: A Geospatial Approach" (Lloyd Lyall, 2019). The thesis is available at https://purl.stanford.edu/qb151vz4409. Readers are referred to the thesis Works Cited section for citations and acknowledgements.
 
